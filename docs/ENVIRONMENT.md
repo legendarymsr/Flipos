@@ -89,6 +89,11 @@ Split the roles honestly:
   do all display/gesture/on-device testing + final acceptance there. The repo is
   portable (git), so the phone just `git pull`s and runs `make run`.
 
+> **Confirmed by the owner:** the Z Flip 4 runs a **custom kernel that exposes
+> `/dev/kvm`**, so on-device flipos uses **`-accel kvm -cpu host`** (near-native),
+> not TCG. The launcher (`release/.../run-flipos.sh`) auto-detects this; `ACCEL=tcg`
+> forces software mode. This also makes `PTR_AUTH`/`BTI` real (native) on-device.
+
 This keeps the prompt's non-negotiables intact (never touch the phone's real
 partitions; everything is image files; be honest about limits) while letting most
 of the work proceed where it's efficient.
