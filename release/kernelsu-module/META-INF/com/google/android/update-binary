@@ -1,0 +1,12 @@
+#!/sbin/sh
+# Minimal Magisk/KernelSU module installer shim. Install via the KernelSU app,
+# which provides the module install environment and sources customize.sh.
+umask 022
+OUTFD=$2; ZIPFILE=$3
+ui_print() { echo "ui_print $1" >&"$OUTFD"; echo "ui_print" >&"$OUTFD"; }
+ui_print "*****************************"
+ui_print " flipos module"
+ui_print " Install this through the KernelSU app (Modules → Install from storage)."
+ui_print "*****************************"
+# When run by the manager, it handles extraction + customize.sh itself.
+exit 0
