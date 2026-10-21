@@ -1,0 +1,11 @@
+# build outputs & caches (never committed; resumable across thermal kills)
+/out/
+/dl/
+/ccache/
+/buildroot/output/
+*.log
+logs/*.log
+# private signing keys — only the public part is tracked
+keys/*.key
+keys/*.pem
+!keys/*.pub
