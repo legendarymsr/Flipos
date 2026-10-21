@@ -11,15 +11,23 @@ BR2_ARM_CPU_ARMV8A=y
 # C library: glibc — chosen for later WebKitGTK browser + GTK4 compatibility
 # (musl is smaller but WebKit on musl is fragile). Justified in docs/PACKAGES.md.
 BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
+# Custom kernel => Buildroot must be told the headers series, or glibc's
+# prerequisites are unknown and it silently falls back to uClibc.
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_18=y
 BR2_TOOLCHAIN_BUILDROOT_CXX=y
 
 # Reproducibility + resumable builds.
 BR2_REPRODUCIBLE=y
-BR2_PER_PACKAGE_DIRECTORIES=y
 BR2_CCACHE=y
 
-# Init: s6 + s6-rc (not systemd).
-BR2_INIT_S6=y
+# Init: Buildroot offers no s6 init choice (verified against 2026.02.3), so the
+# first bootable image uses BusyBox init (not systemd). s6-linux-init as PID 1
+# is a tracked follow-up (docs/LIMITATIONS.md).
+BR2_INIT_BUSYBOX=y
+# EROFS root is read-only by design: don't try to remount it rw at boot.
+# BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set
+# Serial console login (dev builds: no root password).
+BR2_TARGET_GENERIC_GETTY_PORT="ttyAMA0"
 BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
 BR2_PACKAGE_SEATD=y
 
@@ -51,8 +59,17 @@ BR2_TARGET_GENERIC_ISSUE="flipos"
 BR2_SYSTEM_DHCP="eth0"
 
 # ---- Phase 2: Wayland compositor + terminal ----
-# wlroots DRM backend over virtio-gpu; prefer the pixman software renderer (no
-# GPU under QEMU). foot is the terminal. flipos-wm is our compositor (src/).
+# Buildroot's wlroots hard-requires EGL + GLES + GBM, so Mesa is needed at build
+# time. We use the softpipe software driver (no LLVM); at RUN time flipos-session
+# still selects the pixman renderer. foot is the terminal; flipos-wm is ours.
+BR2_PACKAGE_MESA3D=y
+BR2_PACKAGE_MESA3D_GALLIUM_DRIVER_SOFTPIPE=y
+BR2_PACKAGE_MESA3D_OPENGL_EGL=y
+BR2_PACKAGE_MESA3D_OPENGL_ES=y
+# foot needs at least one font.
+BR2_PACKAGE_DEJAVU=y
+# Formats the /data image on first boot.
+BR2_PACKAGE_E2FSPROGS=y
 BR2_PACKAGE_WAYLAND=y
 BR2_PACKAGE_WAYLAND_PROTOCOLS=y
 BR2_PACKAGE_LIBXKBCOMMON=y
