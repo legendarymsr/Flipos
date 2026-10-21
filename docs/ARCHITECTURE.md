@@ -40,7 +40,8 @@
             └──────────────────────────────────────────────────────────┘
                      │
             ┌────────┴──────────────────────────────────────────────────┐
-  machine   │  qemu-system-aarch64 -M virt,gic-version=3  (TCG or KVM)   │
+  machine   │  qemu-system-aarch64 -M virt,gic-version=3  (KVM, else TCG) │
+            │  runs DIRECTLY on Android via KernelSU — no Debian chroot  │
             └──────────────────────────────────────────────────────────┘
 ```
 
@@ -50,7 +51,9 @@
 2. Kernel mounts the **EROFS** root (virtio-blk `vda`) read-only.
 3. **s6-linux-init** (PID 1) starts the `s6-rc` service tree:
    - early one-shots: mount `/proc /sys /dev(pts/shm) /run(tmpfs) /tmp(tmpfs)`;
-     fsck + mount `/data` (ext4, `vdb`); bind `/data/var → /var`.
+     **format `/data` (ext4, `vdb`) on first boot if it has no filesystem**, then
+     fsck + mount it; bind `/data/var → /var`. (The Android launcher ships an
+     empty `data.img`, so the guest owns formatting — no host `mkfs` needed.)
    - longruns: `mdev`/`eudev` (device nodes), `seatd`, `dropbear` (dev only),
      `flipd`, `notifyd`, `pkgd`, `permd`, then **`flipos-wm`**.
 4. `flipos-wm` brings up the virtio-gpu output, starts the shell surfaces, and
