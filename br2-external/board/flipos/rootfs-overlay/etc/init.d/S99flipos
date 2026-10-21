@@ -1,0 +1,3 @@
+#!/bin/sh
+# Serial marker the boot test waits for (docs/ARCHITECTURE.md, prompt §8).
+case "$1" in start) echo "flipos: boot complete" > /dev/console ;; esac

@@ -1,0 +1,17 @@
+#!/bin/sh
+# Mount the writable /data image (vdb). Format it ONLY if it carries no ext
+# filesystem at all (first boot) — never on a mere mount failure, so a damaged
+# filesystem is reported instead of being wiped.
+case "$1" in
+  start)
+    if ! mount -t ext4 /dev/vdb /data 2>/dev/null; then
+      if dumpe2fs -h /dev/vdb >/dev/null 2>&1; then
+        echo "flipos: /data has a filesystem but won't mount — NOT formatting (run e2fsck)"
+        exit 1
+      fi
+      echo "flipos: first boot — formatting /data"
+      mkfs.ext4 -q -F -L flipos-data /dev/vdb && mount -t ext4 /dev/vdb /data
+    fi
+    mkdir -p /data/data /data/system /data/appfs /data/var
+    ;;
+esac

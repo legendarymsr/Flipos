@@ -1,9 +1,11 @@
 #!/bin/sh
-# Start the flipos Wayland session: seatd + the compositor (which spawns the
-# terminal). Launched by the s6 service tree (Phase 1). Software rendering so it
-# works without a GPU under QEMU.
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+# Start the flipos Wayland session (respawned by BusyBox init). seatd provides
+# the seat; flipos-wm launches the terminal.
+sleep 1                                         # don't hot-loop if seatd isn't up yet
+export XDG_RUNTIME_DIR=/run/user/0
 mkdir -p "$XDG_RUNTIME_DIR"; chmod 0700 "$XDG_RUNTIME_DIR"
-export WLR_RENDERER="${WLR_RENDERER:-pixman}"   # CPU rendering; no GPU in QEMU
-export WLR_BACKENDS="${WLR_BACKENDS:-drm}"
+export XDG_CACHE_HOME=/tmp/cache                # root fs is read-only
+export LIBSEAT_BACKEND=seatd
+export WLR_RENDERER="${WLR_RENDERER:-pixman}"   # CPU rendering; no GPU under QEMU
+export WLR_BACKENDS="${WLR_BACKENDS:-drm,libinput}"  # display + virtio tablet/keyboard
 exec flipos-wm "$@"
