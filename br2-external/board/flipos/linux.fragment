@@ -1,0 +1,56 @@
+# flipos kernel fragment — applied on top of arm64 defconfig.
+# Goal: QEMU virt only, monolithic (no modules), hardened. Documented in docs/KERNEL.md.
+
+# --- virtio (QEMU virt) ---
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_INPUT=y
+CONFIG_HW_RANDOM_VIRTIO=y
+CONFIG_DRM_VIRTIO_GPU=y
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_VIRTIO_CONSOLE=y
+
+# --- filesystems ---
+CONFIG_EROFS_FS=y
+CONFIG_EROFS_FS_ZIP=y
+CONFIG_EROFS_FS_ZIP_LZMA=y
+CONFIG_EXT4_FS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_TMPFS=y
+CONFIG_TMPFS_POSIX_ACL=y
+
+# --- namespaces / cgroups / sandboxing primitives (prompt §5) ---
+CONFIG_NAMESPACES=y
+CONFIG_USER_NS=y
+CONFIG_PID_NS=y
+CONFIG_NET_NS=y
+CONFIG_UTS_NS=y
+CONFIG_IPC_NS=y
+CONFIG_CGROUPS=y
+CONFIG_CGROUP_FREEZER=y
+CONFIG_MEMCG=y
+CONFIG_CGROUP_SCHED=y
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_SECURITY=y
+CONFIG_SECURITY_LANDLOCK=y
+CONFIG_BPF_SYSCALL=y
+
+# --- hardening (prompt §3) ---
+CONFIG_STACKPROTECTOR=y
+CONFIG_STACKPROTECTOR_STRONG=y
+CONFIG_RANDOMIZE_BASE=y
+CONFIG_STRICT_KERNEL_RWX=y
+CONFIG_STRICT_MODULE_RWX=y
+CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_ARM64_PTR_AUTH=y
+CONFIG_ARM64_PTR_AUTH_KERNEL=y
+CONFIG_ARM64_BTI=y
+CONFIG_ARM64_BTI_KERNEL=y
+# SHADOW_CALL_STACK requires a clang-built kernel; enable in Phase 1 only if the
+# toolchain is clang (documented in docs/KERNEL.md).
+
+# --- monolithic: no loadable modules (smaller attack surface) ---
+# CONFIG_MODULES is not set
