@@ -108,10 +108,23 @@ decision, `docs/PACKAGES.md`). It gets the Wayland socket + its own data dir;
 everything else is denied by the sandbox. Write to `$XDG_DATA_HOME`
 (`/data/data/<id>`); request only the permissions you need.
 
-## 7. Trust & updates
+## 7. Trust & updates — per-app key pinning
 
-pacman does not enforce Android-style per-app signature continuity; instead the
-**single flipos repo, signed by the flipos key**, is the trusted source — an app
-update is a new package version in that repo, signed by the same key. If you add
-third-party repos, each needs its signing key in the keyring, and you inherit
-that repo's trust. Keep `SigLevel = Required`.
+On top of pacman's GPG check, `flipos-pkg` enforces **per-app key pinning**
+(Android-style signature continuity):
+
+- First install of a package records the **fingerprint of the key that signed
+  it** in `/data/system/app-keys/<pkgname>`.
+- Every later install/upgrade of that package must be signed by the **same key**,
+  or the whole transaction is refused (`KEY MISMATCH`) — even if the new key is
+  trusted by the keyring. So a second trusted repo/key can't silently take over
+  an app you already have.
+- Removing a package forgets its pin. `flipos-pkg --pins` lists pins;
+  `flipos-pkg --unpin <pkg>` deliberately allows a key rotation.
+
+Implemented in `flipos-pkg` (not an alpm hook: with `RootDir=/data/appfs`, pacman
+runs hooks chrooted into the app root, where `gpg` doesn't exist). Tested end to
+end by `scripts/test/test-pkg-pinning.sh` (real pacman/makepkg/gpg; includes a
+control proving plain pacman would accept the rogue upgrade). Root can bypass by
+calling `pacman` directly — the pin protects against hostile *repos/keys*, not
+against the device owner.
