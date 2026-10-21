@@ -1,0 +1,9 @@
+#!/bin/sh
+# Start the flipos Wayland session: seatd + the compositor (which spawns the
+# terminal). Launched by the s6 service tree (Phase 1). Software rendering so it
+# works without a GPU under QEMU.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}"
+mkdir -p "$XDG_RUNTIME_DIR"; chmod 0700 "$XDG_RUNTIME_DIR"
+export WLR_RENDERER="${WLR_RENDERER:-pixman}"   # CPU rendering; no GPU in QEMU
+export WLR_BACKENDS="${WLR_BACKENDS:-drm}"
+exec flipos-wm "$@"

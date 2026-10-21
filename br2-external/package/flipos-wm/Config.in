@@ -1,0 +1,9 @@
+config BR2_PACKAGE_FLIPOS_WM
+	bool "flipos-wm (mobile Wayland compositor)"
+	depends on BR2_PACKAGE_WLROOTS
+	depends on BR2_PACKAGE_WAYLAND
+	select BR2_PACKAGE_WAYLAND_PROTOCOLS
+	select BR2_PACKAGE_LIBXKBCOMMON
+	help
+	  flipos's self-built minimal, mobile-styled wlroots compositor:
+	  fullscreen one app at a time, launches a terminal on start.

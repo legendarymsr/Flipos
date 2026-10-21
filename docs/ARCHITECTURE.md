@@ -154,9 +154,10 @@ this maps to verified boot. Optional fscrypt on `/data/data/*` keyed from the PI
 | Build system (Buildroot br2-external, Makefile, run.sh) | **[scaffold]** |
 | Kernel config (fragment, 6.18.57) | **[scaffold]** — builds in Phase 1 |
 | s6 service tree | [spec] |
-| flipos-wm compositor | [spec] |
-| Shell surfaces | [spec] |
+| flipos-wm compositor | **[scaffold]** — `src/compositor/flipos-wm.c` (wlroots 0.19, fullscreen-per-app, spawns a terminal); builds via the `flipos-wm` Buildroot package |
+| Terminal (foot) | **[scaffold]** — bundled via Buildroot `foot`, launched by the compositor |
+| Shell surfaces (bar/lock/home/drawer/shade/recents) | [spec] |
 | .fpk / pkgd / flipos-launch / permd | [spec] |
 | flipd / notifyd | [spec] |
-| Bundled apps | [spec] |
+| Other bundled apps | [spec] |
 | A/B + dm-verity + fscrypt | [spec] |
