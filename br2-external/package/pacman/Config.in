@@ -1,0 +1,11 @@
+config BR2_PACKAGE_PACMAN
+	bool "pacman (Arch package manager — flipos app PM)"
+	select BR2_PACKAGE_LIBARCHIVE
+	select BR2_PACKAGE_LIBCURL
+	select BR2_PACKAGE_OPENSSL
+	select BR2_PACKAGE_GPGME
+	select BR2_PACKAGE_GNUPG2
+	help
+	  pacman manages flipos apps: Arch .pkg.tar.zst packages, GPG-signed,
+	  installed into the /data app root (the OS root stays read-only).
+	  https://gitlab.archlinux.org/pacman/pacman

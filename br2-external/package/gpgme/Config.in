@@ -1,0 +1,9 @@
+config BR2_PACKAGE_GPGME
+	bool "gpgme"
+	select BR2_PACKAGE_LIBGPG_ERROR
+	select BR2_PACKAGE_LIBASSUAN
+	select BR2_PACKAGE_GNUPG2
+	help
+	  GnuPG Made Easy — the GPG signature library pacman uses to verify
+	  package signatures.
+	  https://gnupg.org/software/gpgme/

@@ -61,3 +61,7 @@ BR2_PACKAGE_LIBDRM=y
 BR2_PACKAGE_WLROOTS=y
 BR2_PACKAGE_FOOT=y
 BR2_PACKAGE_FLIPOS_WM=y
+
+# ---- App package manager: pacman (installs flipos apps into /data) ----
+BR2_PACKAGE_PACMAN=y
+BR2_PACKAGE_GNUPG2=y
