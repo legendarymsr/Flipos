@@ -9,3 +9,6 @@ logs/*.log
 keys/*.key
 keys/*.pem
 !keys/*.pub
+# release: guest images are bundled at package time, not committed
+release/kernelsu-module/payload/images/*
+!release/kernelsu-module/payload/images/.gitkeep

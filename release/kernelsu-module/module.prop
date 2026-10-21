@@ -1,0 +1,6 @@
+id=flipos
+name=flipos (QEMU mobile OS)
+version=v0.1.0
+versionCode=1
+author=legendarymsr
+description=Boots the flipos mobile OS in QEMU inside a self-contained Debian chroot under /data. Systemless: ships no system overlay, auto-runs nothing at boot, and never writes a partition.

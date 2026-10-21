@@ -52,3 +52,7 @@ clean: ## remove build output (keeps dl/ and ccache/)
 .PHONY: distclean
 distclean: ## remove output, downloads, and ccache
 	rm -rf $(O) $(CURDIR)/dl $(CURDIR)/ccache
+
+.PHONY: release
+release: ## package the flashable KernelSU module zip (out/flipos-<ver>.zip)
+	scripts/mkrelease.sh
