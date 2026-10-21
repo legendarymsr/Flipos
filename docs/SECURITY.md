@@ -112,8 +112,10 @@ powered off**; gives nothing against a live, unlocked device or a hostile host.
 
 The release is a **systemless KernelSU module** (`release/kernelsu-module/`): it
 installs to `/data/adb/modules/<id>/`, ships **no `system/` overlay**, and
-**auto-runs nothing at boot**. flipos (chroot + QEMU + images) lives wholly under
-`/data`. It never writes a partition, never calls `dd`/`mkfs`/`fastboot`, and
-never touches `/system`,`/vendor`,`boot`,`vbmeta`, or `/dev/block/*`. Uninstalling
-the module and deleting its `/data` dir removes flipos completely, leaving the
-host untouched. See `release/README.md`.
+**auto-runs nothing at boot**. QEMU runs **directly on Android** as a plain
+userspace process (no Debian chroot); flipos — the native qemu, its images, and
+data — lives wholly under `/data`. It never writes a partition, never calls
+`dd`/`mkfs`/`fastboot`, and never touches `/system`,`/vendor`,`boot`,`vbmeta`, or
+`/dev/block/*`. QEMU opens `/dev/kvm` directly (root via KernelSU) for hardware
+acceleration. Uninstalling the module and deleting its `/data` dir removes flipos
+completely, leaving the host untouched. See `release/README.md`.
