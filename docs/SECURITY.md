@@ -66,9 +66,11 @@ denied syscall returns `EPERM`.
 - Apps are **pacman packages** (`.pkg.tar.zst`) **GPG-signed** by the flipos
   packager key. pacman runs with `SigLevel = Required` against the flipos keyring
   (`/data/system/pacman-gpg`), so **unsigned or tampered packages are rejected**.
-- **Trust = the signed repo.** The single flipos repo, signed by the flipos key,
-  is the trusted source; an update is a new signed version in that repo. Adding a
-  third-party repo means trusting that repo's key — keep `SigLevel = Required`.
+- **Per-app key pinning** (signature continuity): the first install pins the
+  signer's fingerprint per package (`/data/system/app-keys/`); upgrades signed by
+  any other key — even a keyring-trusted one — are refused (`KEY MISMATCH`).
+  Uninstall forgets the pin; `flipos-pkg --unpin` rotates deliberately. Tested by
+  `scripts/test/test-pkg-pinning.sh`.
 - Apps install into the writable `/data` app root only; the OS root is read-only
   EROFS and is never touched by pacman.
 

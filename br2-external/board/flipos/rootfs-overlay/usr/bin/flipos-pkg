@@ -1,14 +1,122 @@
 #!/bin/sh
-# flipos app package manager = pacman with the flipos config. Apps land in
-# /data/appfs; flipos-launch sandboxes them at run time.
+# flipos app package manager = pacman with the flipos config, plus PER-APP KEY
+# PINNING on top. Apps land in /data/appfs; flipos-launch sandboxes them.
+#
+# Pinning (Android-style signature continuity): the first time a package is
+# installed, the fingerprint of the key that signed it is recorded in
+# /data/system/app-keys/<pkgname>. Any later install/upgrade of that package must
+# be signed by the SAME key, or the whole transaction is refused — even if the new
+# key is otherwise trusted by the keyring. Removing a package forgets its pin.
+#
+# Extra commands:  flipos-pkg --pins            list pins
+#                  flipos-pkg --unpin <pkg>     forget a pin (deliberate key rotation)
+#
+# Why not an alpm hook: with RootDir=/data/appfs, pacman runs hook commands
+# chrooted into the app root, where gpg doesn't exist. So we check here, before
+# pacman runs. (Root can always bypass by calling pacman directly; sandboxed apps
+# can't run either.)
 set -eu
-mkdir -p /data/appfs/var/lib/pacman /data/appfs/var/cache/pacman/pkg \
-         /data/appfs/var/log /data/appfs/repo /data/system/pacman-gpg
-# Initialise the keyring + trust the flipos signing key once.
-if [ ! -f /data/system/pacman-gpg/trustdb.gpg ]; then
-  pacman-key --gpgdir /data/system/pacman-gpg --init
-  [ -f /etc/flipos/keys/flipos-packager.gpg ] && \
-    pacman-key --gpgdir /data/system/pacman-gpg --add /etc/flipos/keys/flipos-packager.gpg && \
-    pacman-key --gpgdir /data/system/pacman-gpg --lsign-key flipos-packager || true
+
+ROOT=${FLIPOS_APPROOT:-/data/appfs}
+GPGDIR=${FLIPOS_GPGDIR:-/data/system/pacman-gpg}
+PINS=${FLIPOS_PINS:-/data/system/app-keys}
+PACMAN=${FLIPOS_PACMAN:-pacman}   # overridable for tests
+CACHE=$ROOT/var/cache/pacman/pkg
+REPO=$ROOT/repo
+
+mkdir -p "$ROOT/var/lib/pacman" "$CACHE" "$ROOT/var/log" "$REPO" "$GPGDIR" "$PINS"
+chmod 0700 "$PINS"
+
+# Initialise the keyring + trust the flipos packager key once.
+if [ ! -f "$GPGDIR/trustdb.gpg" ]; then
+  pacman-key --gpgdir "$GPGDIR" --init
+  if [ -f /etc/flipos/keys/flipos-packager.gpg ]; then
+    pacman-key --gpgdir "$GPGDIR" --add /etc/flipos/keys/flipos-packager.gpg
+    pacman-key --gpgdir "$GPGDIR" --lsign-key flipos-packager || true
+  fi
 fi
-exec pacman "$@"
+
+die() { echo "flipos-pkg: $*" >&2; exit 1; }
+
+# Primary-key fingerprint that made a VALID signature over $1 (using $1.sig).
+signer_fpr() {
+  [ -f "$1.sig" ] || return 1
+  gpg --homedir "$GPGDIR" --batch --status-fd 1 --verify "$1.sig" "$1" 2>/dev/null |
+    awk '$2=="VALIDSIG"{ if (NF>=12) print $NF; else print $3; exit }'
+}
+
+# Locate a package file by its file name (cache first, then the local repo).
+find_pkg() {
+  for d in "$CACHE" "$REPO"; do [ -f "$d/$1" ] && { echo "$d/$1"; return 0; }; done
+  return 1
+}
+
+# Check one (name, file) against its pin; record it on first install.
+check_pin() {
+  name=$1; file=$2
+  fpr=$(signer_fpr "$file") || true
+  [ -n "${fpr:-}" ] || die "no valid signature for $name ($file) — refusing"
+  pin="$PINS/$name"
+  if [ -f "$pin" ]; then
+    want=$(cat "$pin")
+    [ "$fpr" = "$want" ] || die "KEY MISMATCH for $name: pinned $want, package signed by $fpr — refusing (flipos-pkg --unpin $name to rotate deliberately)"
+  else
+    echo "$fpr" > "$NEWPINS/$name"   # committed only if the install succeeds
+  fi
+}
+
+case "${1:-}" in
+  --pins)  for p in "$PINS"/*; do [ -f "$p" ] && printf '%s  %s\n' "$(basename "$p")" "$(cat "$p")"; done; exit 0 ;;
+  --unpin) [ -n "${2:-}" ] || die "usage: flipos-pkg --unpin <pkg>"; rm -f "$PINS/$2"; echo "unpinned $2"; exit 0 ;;
+esac
+
+# Find the operation flag (first short option).
+op=""
+for a in "$@"; do case "$a" in --*) ;; -*) op=$a; break ;; esac; done
+targets() { for a in "$@"; do case "$a" in -*) ;; *) echo "$a" ;; esac; done; }
+
+NEWPINS=$(mktemp -d); trap 'rm -rf "$NEWPINS"' EXIT
+
+case "$op" in
+  -S*)
+    flags=${op#-S}
+    case "$flags" in *[siglpcw]*) exec $PACMAN "$@" ;; esac   # queries / clean / download-only
+    case "$flags" in                                         # refresh once up front
+      *yy*) $PACMAN -Syy ;;                                  # -Syy forces a re-download
+      *y*)  $PACMAN -Sy ;;
+    esac
+    # Same args with 'y' stripped from the op flag, for the dry run + download.
+    nflags=$(echo "$flags" | tr -d y)
+    set -- $(for a in "$@"; do [ "$a" = "$op" ] && echo "-S$nflags" || echo "$a"; done)
+    [ "$nflags" = "" ] && [ -z "$(targets "$@")" ] && exit 0   # was just -Sy
+    plan=$($PACMAN "$@" --print --print-format '%n %l') || die "could not resolve transaction"
+    [ -n "$plan" ] || exec $PACMAN "$@"                       # nothing to do
+    $PACMAN "$@" -w --noconfirm >/dev/null || die "download failed"
+    # %l = download URL (portable across pacman versions); its basename is the file.
+    echo "$plan" | while read -r name url; do
+      fname=${url##*/}
+      f=$(find_pkg "$fname") || die "downloaded file missing for $name ($fname)"
+      check_pin "$name" "$f"
+    done
+    ;;
+  -U*)
+    for f in $(targets "$@"); do
+      [ -f "$f" ] || continue
+      name=$($PACMAN -Qip "$f" 2>/dev/null | awk -F': ' '/^Name/{print $2; exit}')
+      [ -n "$name" ] || die "cannot read package name from $f"
+      check_pin "$name" "$f"
+    done
+    ;;
+  -R*)
+    gone=$(targets "$@")
+    $PACMAN "$@"
+    for n in $gone; do rm -f "$PINS/$n"; done   # uninstall forgets the pin
+    exit 0
+    ;;
+  *) exec $PACMAN "$@" ;;
+esac
+
+# All pins checked — run the real transaction (pacman re-verifies, SigLevel=Required).
+$PACMAN "$@"
+for p in "$NEWPINS"/*; do [ -f "$p" ] && mv "$p" "$PINS/"; done
+echo "flipos-pkg: per-app key pins OK"
