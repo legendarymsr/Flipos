@@ -1,4 +1,4 @@
 menu "flipos packages"
 # Our own packages are added here as they land (compositor, shell, services…).
-# source "$BR2_EXTERNAL_FLIPOS_PATH/package/flipos-wm/Config.in"
+source "$BR2_EXTERNAL_FLIPOS_PATH/package/flipos-wm/Config.in"
 endmenu
