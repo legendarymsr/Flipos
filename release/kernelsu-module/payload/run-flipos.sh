@@ -10,6 +10,14 @@ IMG="$FLIPOS/images"
 RES="${RES:-540x1320}"; XRES="${RES%x*}"; YRES="${RES#*x}"
 MEM_MB="${MEM_MB:-2048}"; SMP="${SMP:-4}"
 
+# Acceleration: use KVM when /dev/kvm is usable (a custom kernel can expose it on
+# the Z Flip 4), else fall back to TCG. Override with ACCEL=tcg to force.
+if [ "${ACCEL:-}" = "tcg" ] || [ ! -e /dev/kvm ] || [ ! -w /dev/kvm ]; then
+  ACCEL_ARGS="-accel tcg,thread=multi,tb-size=512 -cpu max"; ACCEL_NAME="TCG (software)"
+else
+  ACCEL_ARGS="-accel kvm -cpu host"; ACCEL_NAME="KVM (hardware)"
+fi
+
 [ -f "$IMG/Image" ] || { echo "no $IMG/Image — install the module with guest images, or copy them there"; exit 1; }
 [ -x "$CHROOT/usr/bin/qemu-system-aarch64" ] || { echo "qemu missing — run bootstrap-chroot.sh first"; exit 1; }
 
@@ -27,9 +35,9 @@ mount -o bind /dev "$CHROOT/dev"; mount -o bind /dev/pts "$CHROOT/dev/pts"
 cleanup() { umount "$CHROOT/images" "$CHROOT/dev/pts" "$CHROOT/dev" "$CHROOT/sys" "$CHROOT/proc" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
-echo "flipos: booting (TCG). Connect a VNC client to 127.0.0.1:5901"
+echo "flipos: booting with $ACCEL_NAME. Connect a VNC client to 127.0.0.1:5901"
 chroot "$CHROOT" qemu-system-aarch64 \
-  -M virt,gic-version=3 -accel tcg,thread=multi,tb-size=512 -cpu max -smp "$SMP" -m "$MEM_MB" \
+  -M virt,gic-version=3 $ACCEL_ARGS -smp "$SMP" -m "$MEM_MB" \
   -kernel /images/Image \
   -append "root=/dev/vda ro rootfstype=erofs console=ttyAMA0" \
   -drive file=/images/rootfs.erofs,if=none,format=raw,id=hd0,readonly=on -device virtio-blk-pci,drive=hd0 \

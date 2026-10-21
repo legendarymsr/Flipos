@@ -36,6 +36,9 @@ Then open a FOSS VNC client (e.g. **AVNC** from F-Droid) to **127.0.0.1:5901** t
 see the phone UI. `RES=`, `MEM_MB=`, `SMP=` env vars override the defaults.
 
 ## Notes
-- This is **TCG** (software emulation) — the Z Flip 4's kernel has no usable KVM
-  for an aarch64 guest; expect modest speed (see `docs/LIMITATIONS.md`).
+- Acceleration is auto-detected: **KVM** (`-accel kvm -cpu host`, near-native)
+  when `/dev/kvm` is usable — a custom kernel enables it on the Z Flip 4 —
+  otherwise **TCG** software emulation. Force software mode with `ACCEL=tcg`.
+  For KVM the chroot needs `/dev/kvm` (the launcher bind-mounts `/dev`, so it is
+  present); the qemu process runs as root and can open it.
 - The module zip itself is produced by `scripts/mkrelease.sh` (`make release`).

@@ -64,8 +64,8 @@ These are the kernel features `flipos-launch` builds the app jail from.
 | `STRICT_KERNEL_RWX` + `STRICT_MODULE_RWX` | W^X on kernel mappings | module one is moot with `MODULES=n` but harmless |
 | `INIT_ON_ALLOC_DEFAULT_ON` | zero heap on alloc; kills many use-of-uninitialized/UAF-read bugs | small perf cost, acceptable |
 | `HARDENED_USERCOPY` | bounds-check copies across the user/kernel boundary | |
-| `ARM64_PTR_AUTH` (+`_KERNEL`) | pointer authentication (ARMv8.3) — ROP/JOP resistance | emulated under TCG `-cpu max`; real on the Flip's ARMv9 cores |
-| `ARM64_BTI` (+`_KERNEL`) | branch target identification (ARMv8.5) | same emulation note |
+| `ARM64_PTR_AUTH` (+`_KERNEL`) | pointer authentication (ARMv8.3) — ROP/JOP resistance | emulated under TCG `-cpu max`; **native under KVM `-cpu host`** on the Flip's ARMv9 cores |
+| `ARM64_BTI` (+`_KERNEL`) | branch target identification (ARMv8.5) | same: emulated on TCG, native on KVM |
 
 ### Not enabled (and why)
 - **`SHADOW_CALL_STACK`** — requires a **clang-built** kernel. Buildroot's default
@@ -76,9 +76,10 @@ These are the kernel features `flipos-launch` builds the app jail from.
 
 ## 5. What this does NOT protect against
 
-- Under QEMU the CPU-level mitigations (`PTR_AUTH`, `BTI`) are **emulated** by TCG
-  on an x86 build host; they exercise the code paths but give no silicon guarantee
-  until run on the phone's real ARMv9 cores.
+- On an x86 build host (TCG) the CPU-level mitigations (`PTR_AUTH`, `BTI`) are
+  **emulated** — they exercise the code paths but give no silicon guarantee. On
+  the phone under **KVM `-cpu host`** they run **natively** on the ARMv9 cores,
+  so they are real there.
 - No Secure Boot / measured boot in QEMU — the machine (QEMU) is the root of
   trust. Verified boot semantics (dm-verity + signed cmdline) land in Phase 4 and
   only mean something on hardware.
