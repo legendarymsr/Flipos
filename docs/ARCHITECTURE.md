@@ -21,11 +21,11 @@
 
 ```
             ┌──────────────────────────────────────────────────────────┐
-  apps      │  Settings  Terminal  Files  Browser  Calculator   (.fpk)  │  UID 10000–19999
+  apps      │  Settings  Terminal  Files  Browser  Calculator (pacman) │  UID 10000–19999
             └──────────────────────────────────────────────────────────┘
                      │ Wayland (client)        │ IPC (AF_UNIX + SO_PEERCRED)
             ┌────────┴─────────────────────────┴───────────────────────┐
-  shell /   │  flipos-wm (wlroots compositor)   flipd  pkgd  permd       │
+  shell /   │  flipos-wm (wlroots compositor)   flipd  permd  pacman     │
   services  │  status bar · lock · home · drawer · shade · recents       │  notifyd
             │  flipos-launch (per-app sandbox launcher)                  │
             └──────────────────────────────────────────────────────────┘
@@ -55,7 +55,7 @@
      fsck + mount it; bind `/data/var → /var`. (The Android launcher ships an
      empty `data.img`, so the guest owns formatting — no host `mkfs` needed.)
    - longruns: `mdev`/`eudev` (device nodes), `seatd`, `dropbear` (dev only),
-     `flipd`, `notifyd`, `pkgd`, `permd`, then **`flipos-wm`**.
+     `flipd`, `notifyd`, `permd`, then **`flipos-wm`** (pacman is on-demand, not a service).
 4. `flipos-wm` brings up the virtio-gpu output, starts the shell surfaces, and
    shows the **lock screen**. On unlock → **home**.
 5. A `flipd` one-shot prints the serial marker **`flipos: boot complete`** (the
@@ -99,13 +99,16 @@ No socket activation, no unit generators — the whole tree is readable at a gla
 - **Shell surfaces:** status bar, lock, home (4×5 grid), app drawer, notification
   shade, recents, gesture nav (edge-swipe back, bottom-swipe home/recents).
 
-## 7. App model — `.fpk`  [spec]
+## 7. App model — pacman packages  [spec]
 
-A zstd tarball: `manifest.toml`, `bin/ lib/ share/`, `icon.svg`, and a detached
-**ed25519** `SIGNATURE` over the canonical hash of all other files. Schema in
-`src/sdk/manifest.schema.json`. Permissions are declared and granted at runtime
-(see `permd`). Each app gets a UID/GID from **10000–19999**, a read-only app dir,
-and a 0700 data dir.
+Apps are **standard Arch packages** (`.pkg.tar.zst`), GPG-signed, installed by
+**pacman** into the writable `/data` app root (`/data/appfs`); the OS root stays
+read-only. A package drops its binary/assets under `/opt/<id>/` and a **flipos
+manifest** at `/usr/share/flipos/apps/<id>.toml` (permissions, intents, entry
+point) that `permd`/`flipd` read — pacman has no permission or sandbox model, so
+the manifest supplies that. On install, `flipd` creates the app's 0700 private
+data dir `/data/data/<id>` with a UID/GID from **10000–19999**; launching runs the
+manifest `entry` through `flipos-launch`. Full author guide: `docs/SDK.md`.
 
 ## 8. Sandbox — `flipos-launch`  [spec]
 
@@ -121,8 +124,9 @@ a dedicated test (`scripts/test/`). Full threat model in `docs/SECURITY.md`.
 
 - **flipd** — app lifecycle (launch/foreground/background/freeze/kill), recents,
   screen on/off, simulated battery (labelled simulated), time/NTP.
-- **pkgd** + `fpkg` CLI — install/remove/verify `.fpk`; signature + continuity
-  checks; lays out app/data dirs.
+- **pacman** (via `flipos-pkg`) — the app package manager: install/remove/verify
+  GPG-signed packages into `/data/appfs` from the flipos repo. Invoked on demand,
+  not a daemon. `flipd` creates each app's private data dir after install.
 - **permd** — runtime permission broker; asks the shell for Allow/Once/Deny;
   persists to `/data/system/permissions.toml`.
 - **notifyd** — notification store/delivery, Do-Not-Disturb, heads-up, actions.
@@ -157,7 +161,8 @@ this maps to verified boot. Optional fscrypt on `/data/data/*` keyed from the PI
 | flipos-wm compositor | **[scaffold]** — `src/compositor/flipos-wm.c` (wlroots 0.19, fullscreen-per-app, spawns a terminal); builds via the `flipos-wm` Buildroot package |
 | Terminal (foot) | **[scaffold]** — bundled via Buildroot `foot`, launched by the compositor |
 | Shell surfaces (bar/lock/home/drawer/shade/recents) | [spec] |
-| .fpk / pkgd / flipos-launch / permd | [spec] |
+| pacman app manager (packaging + repo) | **[scaffold]** — pacman/gpgme Buildroot packages + /etc/pacman.conf + flipos-pkg; example PKGBUILD in `repo/` |
+| flipos-launch / permd | [spec] |
 | flipd / notifyd | [spec] |
 | Other bundled apps | [spec] |
 | A/B + dm-verity + fscrypt | [spec] |

@@ -1,0 +1,9 @@
+id     = "org.flipos.calculator"
+name   = "Calculator"
+entry  = "/opt/org.flipos.calculator/bin/calculator"
+min_os = 1
+[permissions]
+required = []
+optional = []
+[intents]
+handles = []

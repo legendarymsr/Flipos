@@ -12,7 +12,7 @@
 | One app's data | another installed app | isolation — app B cannot read app A's `/data/data` |
 | The system | a malicious/compromised app | containment — a broken app can't escalate to the OS |
 | User data at rest | someone who picks up the (locked) device | lock screen gate; fscrypt (stretch) |
-| Install integrity | a tampered/forged `.fpk` | signature + continuity |
+| Install integrity | a tampered/forged package | pacman GPG signature + trusted repo |
 | Inter-process calls | an app impersonating another | kernel-attested caller identity |
 
 Out of scope (be honest): a hostile **host** (Android/KernelSU underneath QEMU) is
@@ -63,12 +63,14 @@ denied syscall returns `EPERM`.
 
 ## 4. Package security  [spec]
 
-- `.fpk` carries a detached **ed25519** `SIGNATURE` over the canonical hash of all
-  other files. `pkgd` verifies against trusted keys in `/etc/flipos/keys/` and
-  **rejects unsigned or tampered** packages.
-- **Signature continuity:** an upgrade must be signed by the **same** key as the
-  installed version (Android's rule) — a different key is rejected, so a thief of
-  the app id can't push a malicious update.
+- Apps are **pacman packages** (`.pkg.tar.zst`) **GPG-signed** by the flipos
+  packager key. pacman runs with `SigLevel = Required` against the flipos keyring
+  (`/data/system/pacman-gpg`), so **unsigned or tampered packages are rejected**.
+- **Trust = the signed repo.** The single flipos repo, signed by the flipos key,
+  is the trusted source; an update is a new signed version in that repo. Adding a
+  third-party repo means trusting that repo's key — keep `SigLevel = Required`.
+- Apps install into the writable `/data` app root only; the OS root is read-only
+  EROFS and is never touched by pacman.
 
 ## 5. Permissions  [spec]
 

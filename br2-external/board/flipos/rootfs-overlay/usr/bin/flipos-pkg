@@ -1,0 +1,14 @@
+#!/bin/sh
+# flipos app package manager = pacman with the flipos config. Apps land in
+# /data/appfs; flipos-launch sandboxes them at run time.
+set -eu
+mkdir -p /data/appfs/var/lib/pacman /data/appfs/var/cache/pacman/pkg \
+         /data/appfs/var/log /data/appfs/repo /data/system/pacman-gpg
+# Initialise the keyring + trust the flipos signing key once.
+if [ ! -f /data/system/pacman-gpg/trustdb.gpg ]; then
+  pacman-key --gpgdir /data/system/pacman-gpg --init
+  [ -f /etc/flipos/keys/flipos-packager.gpg ] && \
+    pacman-key --gpgdir /data/system/pacman-gpg --add /etc/flipos/keys/flipos-packager.gpg && \
+    pacman-key --gpgdir /data/system/pacman-gpg --lsign-key flipos-packager || true
+fi
+exec pacman "$@"

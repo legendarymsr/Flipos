@@ -1,0 +1,17 @@
+# Reference flipos app packaged for pacman. Build: `makepkg --sign --key flipos-packager`
+pkgname=org.flipos.calculator
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Calculator — reference flipos app"
+arch=('aarch64')
+url="https://github.com/legendarymsr/flipos"
+license=('GPL3')
+depends=()                      # pacman resolves shared-lib deps
+source=("calculator" "$pkgname.toml" "icon.svg")
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/calculator"      "$pkgdir/opt/$pkgname/bin/calculator"
+  install -Dm644 "$srcdir/$pkgname.toml"   "$pkgdir/usr/share/flipos/apps/$pkgname.toml"
+  install -Dm644 "$srcdir/icon.svg"        "$pkgdir/usr/share/icons/hicolor/scalable/apps/$pkgname.svg"
+}

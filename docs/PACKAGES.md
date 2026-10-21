@@ -26,6 +26,14 @@ from the pinned Buildroot tree (`docs/SOURCES.md`), so one tag fixes the set.
 | **foot** | the bundled **terminal** — a tiny, fast FOSS Wayland VT |
 | **flipos-wm** | our **self-built** mobile compositor (`src/compositor/`) |
 
+## Phase 3 — app package manager (pacman)
+| Package | What / why |
+|---|---|
+| **pacman** 7.1.0 | the app package manager — installs GPG-signed apps into /data |
+| **gpgme** 1.24.2 | GPG signature verification for pacman (br2-external package) |
+| gnupg2 | provides `gpg`/`pacman-key` for the flipos keyring |
+| libarchive, libcurl, openssl | pacman deps: package extraction, downloads, crypto |
+
 ## Rendering note
 Under QEMU there is no GPU, so the session launches with `WLR_RENDERER=pixman`
 (CPU/software rendering) and the DRM backend over virtio-gpu. If the pinned
