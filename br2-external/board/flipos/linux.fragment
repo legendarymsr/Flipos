@@ -44,13 +44,13 @@ CONFIG_STACKPROTECTOR=y
 CONFIG_STACKPROTECTOR_STRONG=y
 CONFIG_RANDOMIZE_BASE=y
 CONFIG_STRICT_KERNEL_RWX=y
-CONFIG_STRICT_MODULE_RWX=y
 CONFIG_INIT_ON_ALLOC_DEFAULT_ON=y
 CONFIG_HARDENED_USERCOPY=y
 CONFIG_ARM64_PTR_AUTH=y
 CONFIG_ARM64_PTR_AUTH_KERNEL=y
 CONFIG_ARM64_BTI=y
-CONFIG_ARM64_BTI_KERNEL=y
+# ARM64_BTI_KERNEL: Linux forbids it on GCC-built kernels (gcc bug 106671);
+# needs a clang kernel, like SHADOW_CALL_STACK. Userspace BTI (above) stays on.
 # SHADOW_CALL_STACK requires a clang-built kernel; enable in Phase 1 only if the
 # toolchain is clang (documented in docs/KERNEL.md).
 

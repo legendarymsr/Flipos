@@ -61,13 +61,15 @@ These are the kernel features `flipos-launch` builds the app jail from.
 |---|---|---|
 | `STACKPROTECTOR` + `STACKPROTECTOR_STRONG` | stack-canary coverage | |
 | `RANDOMIZE_BASE` | KASLR | needs good early entropy → virtio-rng above |
-| `STRICT_KERNEL_RWX` + `STRICT_MODULE_RWX` | W^X on kernel mappings | module one is moot with `MODULES=n` but harmless |
+| `STRICT_KERNEL_RWX` | W^X on kernel mappings | (`STRICT_MODULE_RWX` doesn't exist without modules) |
 | `INIT_ON_ALLOC_DEFAULT_ON` | zero heap on alloc; kills many use-of-uninitialized/UAF-read bugs | small perf cost, acceptable |
 | `HARDENED_USERCOPY` | bounds-check copies across the user/kernel boundary | |
 | `ARM64_PTR_AUTH` (+`_KERNEL`) | pointer authentication (ARMv8.3) — ROP/JOP resistance | emulated under TCG `-cpu max`; **native under KVM `-cpu host`** on the Flip's ARMv9 cores |
-| `ARM64_BTI` (+`_KERNEL`) | branch target identification (ARMv8.5) | same: emulated on TCG, native on KVM |
+| `ARM64_BTI` | branch target identification for **userspace** (ARMv8.5) | emulated on TCG, native on KVM. **Kernel** BTI (`ARM64_BTI_KERNEL`) is refused by Linux on GCC-built kernels (gcc bug 106671) — needs clang |
 
 ### Not enabled (and why)
+- **`ARM64_BTI_KERNEL`** — Linux's Kconfig has `depends on !CC_IS_GCC` (gcc bug
+  106671). Verified against the built `.config`: absent. Needs a clang kernel.
 - **`SHADOW_CALL_STACK`** — requires a **clang-built** kernel. Buildroot's default
   is GCC; enabling it means switching the kernel toolchain to clang. Deferred to a
   Phase-1 decision, documented here when taken, not silently skipped.
