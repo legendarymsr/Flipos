@@ -47,6 +47,8 @@ BR2_LINUX_KERNEL_IMAGE=y
 # first run by scripts/run.sh, not baked here.
 BR2_TARGET_ROOTFS_EROFS=y
 BR2_TARGET_ROOTFS_EROFS_LZ4HC=y
+# Only the EROFS image is shipped; skip the redundant tarball.
+# BR2_TARGET_ROOTFS_TAR is not set
 # No initramfs for now; root= points at the EROFS virtio-blk.
 
 # Rootfs overlay (service defs, /etc/flipos, policy).
@@ -86,6 +88,8 @@ BR2_PACKAGE_WLROOTS=y
 BR2_PACKAGE_FOOT=y
 BR2_PACKAGE_FLIPOS_WM=y
 BR2_PACKAGE_FLIPOS_SHELL=y
+# Argon2id PIN hashing for the lock screen.
+BR2_PACKAGE_LIBARGON2=y
 
 # ---- App package manager: pacman (installs flipos apps into /data) ----
 BR2_PACKAGE_PACMAN=y

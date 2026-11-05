@@ -5,7 +5,7 @@ FLIPOS_SHELL_VERSION = 0.1.0
 FLIPOS_SHELL_SITE = $(BR2_EXTERNAL_FLIPOS_PATH)/../src/shell
 FLIPOS_SHELL_SITE_METHOD = local
 FLIPOS_SHELL_LICENSE = GPL-3.0-or-later AND MIT
-FLIPOS_SHELL_DEPENDENCIES = wayland wayland-protocols fcft pixman host-pkgconf host-wayland
+FLIPOS_SHELL_DEPENDENCIES = wayland wayland-protocols fcft pixman libargon2 host-pkgconf host-wayland
 
 FLIPOS_SHELL_MAKE_OPTS = \
 	CC="$(TARGET_CC)" \

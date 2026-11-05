@@ -2,11 +2,14 @@
  * flipos-wm - a minimal, mobile-styled Wayland compositor (wlroots 0.19, C).
  * Derived from wlroots' tinywl reference; made phone-shaped: every app is
  * maximized below a status bar (one at a time); layer-shell for the shell;
- * a bottom gesture bar goes home. Alt+H home, Alt+F1 cycle apps,
+ * edge gestures: swipe up from the bottom = home, swipe in from a side = back;
+ * ext-session-lock lock screen (Power/Alt+L). Alt+H home, Alt+F1 cycle,
  * Alt+Return terminal, Alt+Esc quit.
  * SPDX-License-Identifier: CC0-1.0 (tinywl base) AND GPL-3.0-or-later (flipos changes)
  */
 #include <assert.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include <getopt.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -23,6 +26,7 @@
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
+#include <wlr/types/wlr_session_lock_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
@@ -88,6 +92,24 @@ struct flipos_server {
 	struct wlr_scene_rect *gesture_bg, *gesture_pill;
 	struct wlr_xdg_decoration_manager_v1 *deco_mgr;
 	struct wl_listener new_decoration;
+
+	/* ext-session-lock: the compositor enforces the lock screen */
+	struct wlr_session_lock_manager_v1 *lock_mgr;
+	struct wl_listener new_lock;
+	struct wlr_session_lock_v1 *lock;     /* active lock (NULL if abandoned) */
+	bool locked;                          /* stays true if the locker dies */
+	struct wlr_scene_tree *lock_tree;     /* above everything */
+	struct wlr_scene_rect *lock_bg;
+	struct wl_listener lock_new_surface, lock_unlock, lock_destroy;
+
+	/* the shell (bar/home/lock client), supervised and respawned */
+	const char *shell_cmd;
+	pid_t shell_pid;
+	struct wl_event_source *shell_respawn_timer;
+
+	/* edge gestures */
+	int gesture_edge;                     /* 0 none, 1 bottom, 2 left, 3 right */
+	double gesture_x0, gesture_y0;
 };
 
 struct flipos_output {
@@ -140,6 +162,9 @@ static void focus_toplevel(struct flipos_toplevel *toplevel) {
 		return;
 	}
 	struct flipos_server *server = toplevel->server;
+	if (server->locked) {
+		return;   /* nothing but the lock screen gets focus while locked */
+	}
 	/* An app hidden by "go home" becomes visible again when focused. */
 	wlr_scene_node_set_enabled(&toplevel->scene_tree->node, true);
 	struct wlr_seat *seat = server->seat;
@@ -200,15 +225,22 @@ static void keyboard_handle_modifiers(
 #define FLIPOS_TERMINAL "foot"
 
 /* fork+exec a command through the shell, detached from the compositor. */
-static void spawn(const char *cmd) {
+static pid_t spawn(const char *cmd) {
 	if (cmd == NULL) {
-		return;
+		return -1;
 	}
-	if (fork() == 0) {
+	pid_t pid = fork();
+	if (pid == 0) {
+		/* The event loop blocks SIGCHLD (signalfd); don't pass that on. */
+		sigset_t none;
+		sigemptyset(&none);
+		sigprocmask(SIG_SETMASK, &none, NULL);
+		signal(SIGCHLD, SIG_DFL);
 		setsid();
 		execl("/bin/sh", "/bin/sh", "-c", cmd, (void *)NULL);
 		_exit(127);
 	}
+	return pid;
 }
 
 /* The single phone display (first output in the layout), or NULL. */
@@ -221,7 +253,10 @@ static struct wlr_output *primary_output(struct flipos_server *server) {
 }
 
 #define FLIPOS_SHELL "flipos-shell"   /* status bar + home screen client */
-#define FLIPOS_GESTURE_H 28            /* bottom gesture bar: tap = home */
+#define FLIPOS_GESTURE_H 28            /* bottom gesture bar: tap/swipe up = home */
+#define FLIPOS_EDGE 20                 /* left/right edge zones: swipe in = back */
+#define FLIPOS_SWIPE 60                /* min travel for a swipe, px */
+#define FLIPOS_TAP 12                  /* max travel for a tap, px */
 
 /* A layer-shell surface (status bar, home screen, ...). */
 struct flipos_layer {
@@ -255,6 +290,7 @@ static void arrange(struct flipos_server *server) {
 	}
 	server->usable = usable;
 
+	wlr_scene_rect_set_size(server->lock_bg, w, h);
 	wlr_scene_rect_set_size(server->gesture_bg, w, FLIPOS_GESTURE_H);
 	wlr_scene_node_set_position(&server->gesture_bg->node, 0, h - FLIPOS_GESTURE_H);
 	wlr_scene_node_set_position(&server->gesture_pill->node,
@@ -370,7 +406,132 @@ static void server_new_decoration(struct wl_listener *listener, void *data) {
 	set_server_side_decoration(t);
 }
 
+/* ---- lock screen (ext-session-lock) ---- */
+
+/* While locked only the lock tree is shown and hit-testable. */
+static void show_lock(struct flipos_server *server, bool locked) {
+	for (int i = 0; i < 4; i++) {
+		wlr_scene_node_set_enabled(&server->layer_trees[i]->node, !locked);
+	}
+	wlr_scene_node_set_enabled(&server->toplevel_tree->node, !locked);
+	wlr_scene_node_set_enabled(&server->lock_tree->node, locked);
+}
+
+static void lock_new_surface(struct wl_listener *listener, void *data) {
+	struct flipos_server *server = wl_container_of(listener, server, lock_new_surface);
+	struct wlr_session_lock_surface_v1 *ls = data;
+	int w = 0, h = 0;
+	wlr_output_effective_resolution(ls->output, &w, &h);
+	wlr_session_lock_surface_v1_configure(ls, w, h);
+	wlr_scene_subsurface_tree_create(server->lock_tree, ls->surface);
+	struct wlr_keyboard *kb = wlr_seat_get_keyboard(server->seat);
+	if (kb != NULL) {
+		wlr_seat_keyboard_notify_enter(server->seat, ls->surface,
+			kb->keycodes, kb->num_keycodes, &kb->modifiers);
+	} else {
+		wlr_seat_keyboard_notify_enter(server->seat, ls->surface, NULL, 0, NULL);
+	}
+}
+
+static void lock_detach(struct flipos_server *server) {
+	wl_list_remove(&server->lock_new_surface.link);
+	wl_list_remove(&server->lock_unlock.link);
+	wl_list_remove(&server->lock_destroy.link);
+	server->lock = NULL;
+}
+
+static void lock_unlock(struct wl_listener *listener, void *data) {
+	struct flipos_server *server = wl_container_of(listener, server, lock_unlock);
+	server->locked = false;
+	show_lock(server, false);
+	wlr_seat_keyboard_notify_clear_focus(server->seat);
+	/* give focus back to the visible app, if any */
+	struct flipos_toplevel *t;
+	wl_list_for_each(t, &server->toplevels, link) {
+		if (t->scene_tree->node.enabled) {
+			focus_toplevel(t);
+			break;
+		}
+	}
+	lock_detach(server);
+}
+
+/* Locker went away without unlocking (crash/kill): stay locked. The shell is
+ * respawned and locks again, so the user gets a PIN prompt back. */
+static void lock_destroy(struct wl_listener *listener, void *data) {
+	struct flipos_server *server = wl_container_of(listener, server, lock_destroy);
+	lock_detach(server);
+}
+
+static void server_new_lock(struct wl_listener *listener, void *data) {
+	struct flipos_server *server = wl_container_of(listener, server, new_lock);
+	struct wlr_session_lock_v1 *lock = data;
+	if (server->lock != NULL) {
+		wlr_session_lock_v1_destroy(lock);   /* one locker at a time */
+		return;
+	}
+	server->lock = lock;
+	server->locked = true;
+	show_lock(server, true);
+	wlr_seat_keyboard_notify_clear_focus(server->seat);
+	wlr_seat_pointer_clear_focus(server->seat);
+	server->lock_new_surface.notify = lock_new_surface;
+	wl_signal_add(&lock->events.new_surface, &server->lock_new_surface);
+	server->lock_unlock.notify = lock_unlock;
+	wl_signal_add(&lock->events.unlock, &server->lock_unlock);
+	server->lock_destroy.notify = lock_destroy;
+	wl_signal_add(&lock->events.destroy, &server->lock_destroy);
+	wlr_session_lock_v1_send_locked(lock);
+}
+
+/* Power key / Alt+L: ask the shell (the lock client) to lock. */
+static void request_lock(struct flipos_server *server) {
+	if (!server->locked && server->shell_pid > 0) {
+		kill(server->shell_pid, SIGUSR1);
+	}
+}
+
+/* ---- shell supervision ---- */
+
+static int shell_respawn(void *data) {
+	struct flipos_server *server = data;
+	server->shell_pid = spawn(server->shell_cmd);
+	return 0;
+}
+
+static int handle_sigchld(int signo, void *data) {
+	struct flipos_server *server = data;
+	pid_t pid;
+	int status;
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+		if (pid == server->shell_pid) {
+			/* The shell owns the lock screen: always bring it back. */
+			server->shell_pid = -1;
+			wlr_log(WLR_ERROR, "shell exited; restarting in 1s");
+			wl_event_source_timer_update(server->shell_respawn_timer, 1000);
+		}
+	}
+	return 0;
+}
+
+/* ---- gestures ---- */
+
+/* Back: close the focused app (like Android's back on an app's last screen). */
+static void go_back(struct flipos_server *server) {
+	struct wlr_surface *focused = server->seat->keyboard_state.focused_surface;
+	struct flipos_toplevel *t;
+	wl_list_for_each(t, &server->toplevels, link) {
+		if (t->xdg_toplevel->base->surface == focused && t->scene_tree->node.enabled) {
+			wlr_xdg_toplevel_send_close(t->xdg_toplevel);
+			return;
+		}
+	}
+}
+
 static bool handle_keybinding(struct flipos_server *server, xkb_keysym_t sym) {
+	if (server->locked) {
+		return false;   /* every key goes to the lock screen */
+	}
 	/*
 	 * Here we handle compositor keybindings. This is when the compositor is
 	 * processing keys, rather than passing them on to the client for its own
@@ -399,6 +560,10 @@ static bool handle_keybinding(struct flipos_server *server, xkb_keysym_t sym) {
 		/* Alt+H goes home (same as tapping the gesture bar). */
 		go_home(server);
 		break;
+	case XKB_KEY_l:
+		/* Alt+L locks the screen. */
+		request_lock(server);
+		break;
 	default:
 		return false;
 	}
@@ -422,6 +587,14 @@ static void keyboard_handle_key(
 			keyboard->wlr_keyboard->xkb_state, keycode, &syms);
 
 	bool handled = false;
+	if (event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		for (int i = 0; i < nsyms; i++) {
+			if (syms[i] == XKB_KEY_XF86PowerOff) {
+				request_lock(server);
+				handled = true;
+			}
+		}
+	}
 	uint32_t modifiers = wlr_keyboard_get_modifiers(keyboard->wlr_keyboard);
 	if ((modifiers & WLR_MODIFIER_ALT) &&
 			event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
@@ -727,17 +900,41 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 	struct flipos_server *server =
 		wl_container_of(listener, server, cursor_button);
 	struct wlr_pointer_button_event *event = data;
-	/* Tap on the bottom gesture bar: go home (not delivered to any client). */
+	/* Edge gestures (not delivered to any client), unless locked:
+	 *   from the bottom gesture bar: swipe up or tap  -> home
+	 *   from the left/right edge:    swipe inwards    -> back
+	 * A press that starts in an edge zone is owned by the gesture until
+	 * release. */
 	struct wlr_output *out = primary_output(server);
-	if (out != NULL) {
+	if (out != NULL && !server->locked) {
 		int w, h;
 		wlr_output_effective_resolution(out, &w, &h);
-		if (server->cursor->y >= h - FLIPOS_GESTURE_H) {
-			if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+		double x = server->cursor->x, y = server->cursor->y;
+		if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+			int edge = 0;
+			if (y >= h - FLIPOS_GESTURE_H) edge = 1;
+			else if (x < FLIPOS_EDGE) edge = 2;
+			else if (x >= w - FLIPOS_EDGE) edge = 3;
+			if (edge != 0) {
+				server->gesture_edge = edge;
+				server->gesture_x0 = x;
+				server->gesture_y0 = y;
+				return;
+			}
+		} else if (server->gesture_edge != 0) {
+			int edge = server->gesture_edge;
+			int dx = (int)(x - server->gesture_x0), dy = (int)(y - server->gesture_y0);
+			server->gesture_edge = 0;
+			bool tap = dx > -FLIPOS_TAP && dx < FLIPOS_TAP && dy > -FLIPOS_TAP && dy < FLIPOS_TAP;
+			if (edge == 1 && (dy <= -FLIPOS_SWIPE || tap)) {
 				go_home(server);
+			} else if ((edge == 2 && dx >= FLIPOS_SWIPE) || (edge == 3 && dx <= -FLIPOS_SWIPE)) {
+				go_back(server);
 			}
 			return;
 		}
+	} else {
+		server->gesture_edge = 0;
 	}
 	/* Notify the client with pointer focus that a button press has occurred */
 	wlr_seat_pointer_notify_button(server->seat,
@@ -1108,7 +1305,9 @@ static void server_new_xdg_popup(struct wl_listener *listener, void *data) {
 }
 
 int main(int argc, char *argv[]) {
-	wlr_log_init(WLR_DEBUG, NULL);
+	/* Errors only by default: debug logs flood the console (and a full serial
+	 * console blocks every process writing to it). FLIPOS_DEBUG=1 for more. */
+	wlr_log_init(getenv("FLIPOS_DEBUG") ? WLR_DEBUG : WLR_ERROR, NULL);
 	char *startup_cmd = NULL;
 
 	int c;
@@ -1209,6 +1408,16 @@ int main(int argc, char *argv[]) {
 	server.layer_shell = wlr_layer_shell_v1_create(server.wl_display, 4);
 	server.new_layer_surface.notify = server_new_layer_surface;
 	wl_signal_add(&server.layer_shell->events.new_surface, &server.new_layer_surface);
+	server.lock_tree = wlr_scene_tree_create(&server.scene->tree);
+	const float lock_black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+	server.lock_bg = wlr_scene_rect_create(server.lock_tree, 0, 0, lock_black);
+	wlr_scene_node_set_enabled(&server.lock_tree->node, false);
+	server.lock_mgr = wlr_session_lock_manager_v1_create(server.wl_display);
+	server.new_lock.notify = server_new_lock;
+	wl_signal_add(&server.lock_mgr->events.new_lock, &server.new_lock);
+	struct wl_event_loop *loop = wl_display_get_event_loop(server.wl_display);
+	wl_event_loop_add_signal(loop, SIGCHLD, handle_sigchld, &server);
+	server.shell_respawn_timer = wl_event_loop_add_timer(loop, shell_respawn, &server);
 	server.deco_mgr = wlr_xdg_decoration_manager_v1_create(server.wl_display);
 	server.new_decoration.notify = server_new_decoration;
 	wl_signal_add(&server.deco_mgr->events.new_toplevel_decoration, &server.new_decoration);
@@ -1297,7 +1506,8 @@ int main(int argc, char *argv[]) {
 	setenv("WAYLAND_DISPLAY", socket, true);
 	/* Start the phone shell (status bar + home screen); the terminal is an
 	 * app on the home screen. Override the startup command with -s "<cmd>". */
-	spawn(startup_cmd ? startup_cmd : FLIPOS_SHELL);
+	server.shell_cmd = startup_cmd ? startup_cmd : FLIPOS_SHELL;
+	server.shell_pid = spawn(server.shell_cmd);
 	/* Run the Wayland event loop. This does not return until you exit the
 	 * compositor. Starting the backend rigged up all of the necessary event
 	 * loop configuration to listen to libinput events, DRM events, generate

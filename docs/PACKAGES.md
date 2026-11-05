@@ -27,6 +27,7 @@ from the pinned Buildroot tree (`docs/SOURCES.md`), so one tag fixes the set.
 | **flipos-wm** | our **self-built** mobile compositor (`src/compositor/`) |
 | **flipos-shell** | our status bar + home screen (`src/shell/`) |
 | fcft | font rasterizing for the shell (already required by foot) |
+| libargon2 | Argon2id hashing of the lock-screen PIN (memory-hard, salted) |
 
 ## Phase 3 — app package manager (pacman)
 | Package | What / why |

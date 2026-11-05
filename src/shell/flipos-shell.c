@@ -5,6 +5,9 @@
  *   - status bar: TOP layer, anchored to the top edge, reserves BAR_H pixels
  *     (exclusive zone) so apps are laid out below it. Shows the time and the
  *     network state.
+ *   - lock screen: ext-session-lock (the compositor enforces it: nothing else
+ *     is shown or gets input while locked, even if this process dies). PIN is
+ *     stored as an Argon2id hash; failed attempts back off exponentially.
  *   - home screen: BACKGROUND layer filling the remaining area. A grid of the
  *     installed apps, read from their flipos manifests; tap an icon to launch.
  * Apps open on top of the home screen; the compositor's gesture bar (or Alt+H)
@@ -27,11 +30,18 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <argon2.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/random.h>
+#include <sys/stat.h>
+
 #include <fcft/fcft.h>
 #include <pixman.h>
 #include <wayland-client.h>
 
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "ext-session-lock-v1-client-protocol.h"
 
 #define BAR_H 36
 #define MAX_APPS 64
@@ -56,12 +66,13 @@ struct app {
 	char entry[512];
 };
 
-enum kind { KIND_BAR, KIND_HOME };
+enum kind { KIND_BAR, KIND_HOME, KIND_LOCK };
 
 struct surf {
 	enum kind kind;
 	struct wl_surface *surface;
 	struct zwlr_layer_surface_v1 *layer;
+	struct ext_session_lock_surface_v1 *lock_surface;
 	int w, h;
 	bool configured;
 };
@@ -78,9 +89,27 @@ static struct wl_shm *shm;
 static struct wl_seat *seat;
 static struct wl_pointer *pointer;
 static struct zwlr_layer_shell_v1 *layer_shell;
+static struct ext_session_lock_manager_v1 *lock_mgr;
+static struct wl_output *output;
+static struct wl_keyboard *keyboard;
 
 static struct surf bar = { .kind = KIND_BAR };
 static struct surf home = { .kind = KIND_HOME };
+static struct surf lock = { .kind = KIND_LOCK };
+
+/* ---- lock state ---- */
+#define PIN_FILE   "/data/system/lock.pin"     /* Argon2id encoded hash */
+#define STATE_FILE "/data/system/lock.state"   /* "<fails> <locked_until>" */
+#define PIN_MIN 4
+#define PIN_MAX 8
+enum lock_mode { LM_ENTER, LM_SET, LM_CONFIRM };
+static struct ext_session_lock_v1 *session_lock;
+static bool session_locked;                    /* compositor confirmed */
+static enum lock_mode lmode;
+static char pin[PIN_MAX + 1], first_pin[PIN_MAX + 1];
+static int pin_len;
+static char lock_msg[64];
+static volatile sig_atomic_t lock_requested;
 static struct fcft_font *font, *font_small, *font_icon;
 
 static struct app apps[MAX_APPS];
@@ -310,6 +339,7 @@ static bool scan_apps(void) {
 static void launch(const struct app *a) {
 	pid_t pid = fork();
 	if (pid == 0) {
+		signal(SIGCHLD, SIG_DFL);   /* don't pass our SIG_IGN on to the app */
 		setsid();
 		execl("/bin/sh", "sh", "-c", a->entry, (char *)NULL);
 		_exit(127);
@@ -381,6 +411,290 @@ static void draw_home(pixman_image_t *img, uint32_t *px, int w, int h) {
 	}
 }
 
+/* ---------- lock screen ---------- */
+
+static const char *keys[12] = { "1", "2", "3", "4", "5", "6", "7", "8", "9", "<", "0", "OK" };
+
+static void key_rect(int w, int h, int i, int *x, int *y, int *kw, int *kh) {
+	int cell = w / 3;
+	*kw = cell - 36;
+	*kh = 74;
+	*x = (i % 3) * cell + 18;
+	*y = (int)(h * 0.40) + (i / 3) * 90;
+}
+
+static bool pin_exists(void) {
+	return access(PIN_FILE, R_OK) == 0;
+}
+
+static void load_state(int *fails, long *until) {
+	*fails = 0;
+	*until = 0;
+	FILE *f = fopen(STATE_FILE, "r");
+	if (f) {
+		if (fscanf(f, "%d %ld", fails, until) != 2) {
+			*fails = 0;
+			*until = 0;
+		}
+		fclose(f);
+	}
+}
+
+static bool write_private(const char *path, const char *data) {
+	char tmp[256];
+	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+	mkdir("/data/system", 0700);
+	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (fd < 0) {
+		return false;
+	}
+	size_t n = strlen(data);
+	bool ok = write(fd, data, n) == (ssize_t)n && fsync(fd) == 0;
+	close(fd);
+	return ok && rename(tmp, path) == 0;
+}
+
+static void save_state(int fails, long until) {
+	char buf[64];
+	snprintf(buf, sizeof(buf), "%d %ld\n", fails, until);
+	write_private(STATE_FILE, buf);
+}
+
+/* Argon2id: 3 passes, 32 MiB, 1 lane, 16-byte random salt, 32-byte hash. */
+static bool save_pin(const char *p) {
+	uint8_t salt[16];
+	if (getrandom(salt, sizeof(salt), 0) != (ssize_t)sizeof(salt)) {
+		return false;
+	}
+	char enc[256];
+	if (argon2id_hash_encoded(3, 32 * 1024, 1, p, strlen(p), salt, sizeof(salt),
+			32, enc, sizeof(enc)) != ARGON2_OK) {
+		return false;
+	}
+	return write_private(PIN_FILE, enc);
+}
+
+static bool verify_pin(const char *p) {
+	char enc[256] = "";
+	FILE *f = fopen(PIN_FILE, "r");
+	if (!f) {
+		return false;
+	}
+	if (!fgets(enc, sizeof(enc), f)) {
+		enc[0] = '\0';
+	}
+	fclose(f);
+	enc[strcspn(enc, "\n")] = '\0';
+	return enc[0] != '\0' && argon2id_verify(enc, p, strlen(p)) == ARGON2_OK;
+}
+
+/* Seconds left in a back-off, or 0. */
+static long backoff_left(void) {
+	int fails;
+	long until;
+	load_state(&fails, &until);
+	long left = until - (long)time(NULL);
+	return left > 0 ? left : 0;
+}
+
+static void wipe_pins(void) {
+	explicit_bzero(pin, sizeof(pin));
+	explicit_bzero(first_pin, sizeof(first_pin));
+	pin_len = 0;
+}
+
+static void draw_lock(pixman_image_t *img, uint32_t *px, int w, int h) {
+	fill(img, C_BG, 0, 0, w, h);
+
+	char clock[16], date[32];
+	time_t now = time(NULL);
+	struct tm tm;
+	localtime_r(&now, &tm);
+	strftime(clock, sizeof(clock), "%H:%M", &tm);
+	strftime(date, sizeof(date), "%A %d %B", &tm);
+	draw_text_centered(img, font_icon, clock, 0, w, (int)(h * 0.12), C_FG);
+	draw_text_centered(img, font_small, date, 0, w, (int)(h * 0.12) + 28, C_DIM);
+
+	const char *prompt = lmode == LM_SET ? "Set a PIN (4-8 digits)" :
+		lmode == LM_CONFIRM ? "Confirm your PIN" : "Enter PIN";
+	draw_text_centered(img, font, prompt, 0, w, (int)(h * 0.24), C_FG);
+	if (lock_msg[0]) {
+		draw_text_centered(img, font_small, lock_msg, 0, w, (int)(h * 0.24) + 26, 0xf7768e);
+	}
+
+	/* entered digits as dots */
+	int dot = 14, gap = 26;
+	int total = PIN_MAX * gap - (gap - dot);
+	int dx = (w - total) / 2, dy = (int)(h * 0.32);
+	for (int i = 0; i < PIN_MAX; i++) {
+		fill_rounded(px, w, w, h, i < pin_len ? C_ACCENT : 0x2a2e42,
+			dx + i * gap, dy, dot, dot, dot / 2);
+	}
+
+	for (int i = 0; i < 12; i++) {
+		int x, y, kw, kh;
+		key_rect(w, h, i, &x, &y, &kw, &kh);
+		fill_rounded(px, w, w, h, i == 11 ? C_ACCENT : 0x24283b, x, y, kw, kh, 16);
+		struct fcft_font *f = i == 11 ? font : font_icon;
+		draw_text_centered(img, f, keys[i], x, kw,
+			y + (kh + f->ascent - f->descent) / 2, i == 11 ? C_BG : C_FG);
+	}
+}
+
+static void lock_cleanup(void) {
+	if (lock.lock_surface) {
+		ext_session_lock_surface_v1_destroy(lock.lock_surface);
+		lock.lock_surface = NULL;
+	}
+	if (lock.surface) {
+		wl_surface_destroy(lock.surface);
+		lock.surface = NULL;
+	}
+	lock.configured = false;
+	wipe_pins();
+}
+
+static void do_unlock(void) {
+	if (!session_lock || !session_locked) {
+		return;     /* protocol: only after the compositor said 'locked' */
+	}
+	lock_cleanup();
+	ext_session_lock_v1_unlock_and_destroy(session_lock);
+	session_lock = NULL;
+	session_locked = false;
+	wl_display_flush(display);
+}
+
+static void render(struct surf *s);
+
+static void submit_pin(void) {
+	pin[pin_len] = '\0';
+	if (pin_len < PIN_MIN) {
+		snprintf(lock_msg, sizeof(lock_msg), "PIN must be %d-%d digits", PIN_MIN, PIN_MAX);
+		return;
+	}
+	if (lmode == LM_SET) {
+		memcpy(first_pin, pin, sizeof(pin));
+		explicit_bzero(pin, sizeof(pin));
+		pin_len = 0;
+		lmode = LM_CONFIRM;
+		lock_msg[0] = '\0';
+		return;
+	}
+	if (lmode == LM_CONFIRM) {
+		if (strcmp(pin, first_pin) == 0 && save_pin(pin)) {
+			save_state(0, 0);
+			do_unlock();
+		} else {
+			lmode = LM_SET;
+			snprintf(lock_msg, sizeof(lock_msg), "PINs didn't match - try again");
+			wipe_pins();
+		}
+		return;
+	}
+	/* LM_ENTER */
+	long left = backoff_left();
+	if (left > 0) {
+		snprintf(lock_msg, sizeof(lock_msg), "Too many attempts - wait %lds", left);
+		wipe_pins();
+		return;
+	}
+	snprintf(lock_msg, sizeof(lock_msg), "Checking...");
+	render(&lock);
+	wl_display_flush(display);
+	if (verify_pin(pin)) {
+		save_state(0, 0);
+		lock_msg[0] = '\0';
+		do_unlock();
+		return;
+	}
+	int fails;
+	long until;
+	load_state(&fails, &until);
+	fails++;
+	until = 0;
+	if (fails >= 3) {
+		long delay = 5L << (fails - 3 < 8 ? fails - 3 : 8);   /* 5s, 10s ... */
+		if (delay > 900) delay = 900;                          /* max 15 min */
+		until = (long)time(NULL) + delay;
+		snprintf(lock_msg, sizeof(lock_msg), "Wrong PIN - wait %lds", delay);
+	} else {
+		snprintf(lock_msg, sizeof(lock_msg), "Wrong PIN");
+	}
+	save_state(fails, until);
+	wipe_pins();
+}
+
+static void lock_key(const char *k) {
+	if (!session_lock || !lock.configured) {
+		return;
+	}
+	if (k[0] >= '0' && k[0] <= '9') {
+		if (pin_len < PIN_MAX) {
+			pin[pin_len++] = k[0];
+		}
+		if (lmode == LM_ENTER || lmode == LM_SET) lock_msg[0] = '\0';
+	} else if (k[0] == '<') {
+		if (pin_len > 0) {
+			pin[--pin_len] = '\0';
+		}
+	} else {
+		submit_pin();
+	}
+	if (session_lock) {
+		render(&lock);
+	}
+}
+
+static void session_locked_ev(void *d, struct ext_session_lock_v1 *l) {
+	session_locked = true;
+}
+
+/* The compositor refused or ended the lock: drop our side of it. */
+static void session_finished_ev(void *d, struct ext_session_lock_v1 *l) {
+	lock_cleanup();
+	ext_session_lock_v1_destroy(session_lock);
+	session_lock = NULL;
+	session_locked = false;
+}
+
+static const struct ext_session_lock_v1_listener session_lock_listener = {
+	.locked = session_locked_ev,
+	.finished = session_finished_ev,
+};
+
+static void lock_surface_configure(void *data, struct ext_session_lock_surface_v1 *ls,
+		uint32_t serial, uint32_t w, uint32_t h) {
+	struct surf *s = data;
+	ext_session_lock_surface_v1_ack_configure(ls, serial);
+	s->w = (int)w;
+	s->h = (int)h;
+	s->configured = true;
+	render(s);
+}
+
+static const struct ext_session_lock_surface_v1_listener lock_surface_listener = {
+	.configure = lock_surface_configure,
+};
+
+static void lock_start(void) {
+	if (session_lock || !lock_mgr || !output) {
+		return;
+	}
+	wipe_pins();
+	lock_msg[0] = '\0';
+	lmode = pin_exists() ? LM_ENTER : LM_SET;
+	session_lock = ext_session_lock_manager_v1_lock(lock_mgr);
+	ext_session_lock_v1_add_listener(session_lock, &session_lock_listener, NULL);
+	lock.surface = wl_compositor_create_surface(compositor);
+	lock.lock_surface = ext_session_lock_v1_get_lock_surface(session_lock, lock.surface, output);
+	ext_session_lock_surface_v1_add_listener(lock.lock_surface, &lock_surface_listener, &lock);
+}
+
+static void on_sigusr1(int sig) {
+	lock_requested = 1;
+}
+
 static void render(struct surf *s) {
 	if (!s->configured || s->w <= 0 || s->h <= 0) {
 		return;
@@ -393,6 +707,8 @@ static void render(struct surf *s) {
 		b->data, s->w * 4);
 	if (s->kind == KIND_BAR) {
 		draw_bar(img, s->w, s->h);
+	} else if (s->kind == KIND_LOCK) {
+		draw_lock(img, b->data, s->w, s->h);
 	} else {
 		draw_home(img, b->data, s->w, s->h);
 	}
@@ -468,7 +784,21 @@ static void p_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t x, wl
 
 static void p_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t t,
 		uint32_t button, uint32_t state) {
-	if (state != WL_POINTER_BUTTON_STATE_RELEASED || pointer_surface != home.surface) {
+	if (state != WL_POINTER_BUTTON_STATE_RELEASED) {
+		return;
+	}
+	if (lock.surface && pointer_surface == lock.surface) {
+		for (int i = 0; i < 12; i++) {
+			int x, y, kw, kh;
+			key_rect(lock.w, lock.h, i, &x, &y, &kw, &kh);
+			if (pointer_x >= x && pointer_x < x + kw && pointer_y >= y && pointer_y < y + kh) {
+				lock_key(keys[i]);
+				break;
+			}
+		}
+		return;
+	}
+	if (pointer_surface != home.surface) {
 		return;
 	}
 	int cell_w = home.w / COLS;
@@ -502,7 +832,47 @@ static const struct wl_pointer_listener pointer_listener = {
 	.axis_value120 = p_axis_value120, .axis_relative_direction = p_axis_rel,
 };
 
+static void k_keymap(void *d, struct wl_keyboard *k, uint32_t fmt, int32_t fd, uint32_t size) {
+	close(fd);   /* we only need digits, read as raw evdev keycodes */
+}
+static void k_enter(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *s,
+		struct wl_array *keys_down) {}
+static void k_leave(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *s) {}
+static void k_key(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t t,
+		uint32_t key, uint32_t state) {
+	if (state != WL_KEYBOARD_KEY_STATE_PRESSED || !session_lock) {
+		return;
+	}
+	static const char *digits = "1234567890";         /* KEY_1 (2) .. KEY_0 (11) */
+	if (key >= 2 && key <= 11) {
+		char c[2] = { digits[key - 2], '\0' };
+		lock_key(c);
+		return;
+	}
+	switch (key) {
+	case 79: lock_key("1"); break; case 80: lock_key("2"); break;  /* keypad */
+	case 81: lock_key("3"); break; case 75: lock_key("4"); break;
+	case 76: lock_key("5"); break; case 77: lock_key("6"); break;
+	case 71: lock_key("7"); break; case 72: lock_key("8"); break;
+	case 73: lock_key("9"); break; case 82: lock_key("0"); break;
+	case 14: lock_key("<"); break;                          /* backspace */
+	case 28: case 96: lock_key("OK"); break;                /* enter, kp enter */
+	}
+}
+static void k_mods(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t dep,
+		uint32_t lat, uint32_t lck, uint32_t grp) {}
+static void k_repeat(void *d, struct wl_keyboard *k, int32_t rate, int32_t delay) {}
+
+static const struct wl_keyboard_listener keyboard_listener = {
+	.keymap = k_keymap, .enter = k_enter, .leave = k_leave, .key = k_key,
+	.modifiers = k_mods, .repeat_info = k_repeat,
+};
+
 static void seat_caps(void *d, struct wl_seat *s, uint32_t caps) {
+	if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) && !keyboard) {
+		keyboard = wl_seat_get_keyboard(s);
+		wl_keyboard_add_listener(keyboard, &keyboard_listener, NULL);
+	}
 	if ((caps & WL_SEAT_CAPABILITY_POINTER) && !pointer) {
 		pointer = wl_seat_get_pointer(s);
 		wl_pointer_add_listener(pointer, &pointer_listener, NULL);
@@ -528,6 +898,10 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name,
 		wl_seat_add_listener(seat, &seat_listener, NULL);
 	} else if (strcmp(iface, zwlr_layer_shell_v1_interface.name) == 0) {
 		layer_shell = wl_registry_bind(r, name, &zwlr_layer_shell_v1_interface, 1);
+	} else if (strcmp(iface, ext_session_lock_manager_v1_interface.name) == 0) {
+		lock_mgr = wl_registry_bind(r, name, &ext_session_lock_manager_v1_interface, 1);
+	} else if (strcmp(iface, wl_output_interface.name) == 0 && !output) {
+		output = wl_registry_bind(r, name, &wl_output_interface, 1);
 	}
 }
 
@@ -569,6 +943,14 @@ int main(void) {
 		return 1;
 	}
 
+	struct sigaction sa = { .sa_handler = on_sigusr1 };   /* no SA_RESTART: poll wakes */
+	sigemptyset(&sa.sa_mask);
+	sigaction(SIGUSR1, &sa, NULL);
+
+	if (!lock_mgr || !output) {
+		fprintf(stderr, "flipos-shell: no ext-session-lock; lock screen unavailable\n");
+	}
+	lock_start();            /* boot straight into the lock screen */
 	scan_apps();
 	make_surface(&home);
 	make_surface(&bar);
@@ -586,6 +968,10 @@ int main(void) {
 		wl_display_flush(display);
 		struct pollfd pfd = { .fd = wl_display_get_fd(display), .events = POLLIN };
 		int ret = poll(&pfd, 1, timeout_ms);
+		if (lock_requested) {
+			lock_requested = 0;
+			lock_start();
+		}
 		if (ret > 0) {
 			if (wl_display_read_events(display) < 0) {
 				break;
@@ -598,6 +984,9 @@ int main(void) {
 		}
 		if (ret == 0) {
 			render(&bar);
+			if (session_lock) {
+				render(&lock);   /* clock */
+			}
 			if (scan_apps()) {
 				render(&home);
 			}
