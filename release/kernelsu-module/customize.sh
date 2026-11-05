@@ -1,45 +1,59 @@
-# flipos KernelSU module — install step. Runs in the manager's installer env.
-# SAFETY: copies payload to /data only. No partition writes, no system overlay,
-# no dd/mkfs/fastboot, no remount of /system or /vendor. QEMU runs directly on
-# Android (no Debian chroot).
-SKIPMOUNT=true          # we ship no system/ overlay; nothing is mounted over the host
+# flipos KernelSU module — install step (runs in the manager's installer).
+# Configures everything: guest images, bundled QEMU (KVM + TCG, VNC + websocket),
+# the noVNC web viewer, the `flipos` controller, the Action button and WebUI.
+# SAFETY: copies files to /data/flipos only. No partition writes, no system
+# overlay, no dd/mkfs/fastboot, no remount, and nothing starts at boot.
+SKIPMOUNT=true          # no system/ overlay: nothing is mounted over Android
 ASH_STANDALONE=1
 
-FLIPOS_DIR=/data/flipos
+F=/data/flipos
+P="$MODPATH/payload"
 
-ui_print "- flipos: installing to $FLIPOS_DIR (systemless, /data only)"
-mkdir -p "$FLIPOS_DIR/images" "$FLIPOS_DIR/bin" "$FLIPOS_DIR/qemu/lib" "$FLIPOS_DIR/tmp"
+# Upgrading while flipos runs? stop it first (its disk files are about to be replaced).
+[ -x "$F/bin/flipos" ] && sh "$F/bin/flipos" stop >/dev/null 2>&1
 
-# flipos guest images bundled in the zip (payload/images), copied to writable /data.
-if [ -d "$MODPATH/payload/images" ] && [ -f "$MODPATH/payload/images/Image" ]; then
-  cp -f "$MODPATH/payload/images/"* "$FLIPOS_DIR/images/" 2>/dev/null || true
-  ui_print "- flipos: guest images copied"
+ui_print "- flipos: installing to $F (systemless, /data only)"
+mkdir -p "$F/images" "$F/bin" "$F/run" "$F/tmp"
+
+for f in Image rootfs.erofs; do
+  [ -f "$P/images/$f" ] || abort "! payload/images/$f missing from the zip"
+done
+cp -f "$P/images/Image" "$P/images/rootfs.erofs" "$F/images/"
+ui_print "- guest OS images installed (your data.img is kept)"
+
+[ -x "$P/host/lib/ld-linux-aarch64.so.1" ] || abort "! bundled QEMU missing from the zip"
+rm -rf "$F/host" "$F/novnc"
+cp -a "$P/host" "$F/host"
+cp -a "$P/novnc" "$F/novnc"
+cp -f "$P/flipos" "$F/bin/flipos"
+rm -rf "$F/qemu" "$F/bin/run-flipos.sh" "$F/bin/bootstrap-qemu.sh" \
+       "$F/bin/qemu-system-aarch64" "$F/bin/qemu-img"            # pre-0.3 layout
+ui_print "- QEMU $(cat "$P/host/QEMU_VERSION" 2>/dev/null) + noVNC installed"
+
+set_perm_recursive "$F" 0 0 0755 0644
+set_perm_recursive "$F/host/bin" 0 0 0755 0755
+set_perm "$F/host/lib/ld-linux-aarch64.so.1" 0 0 0755
+set_perm "$F/bin/flipos" 0 0 0755
+chmod 0700 "$F/images" "$F/run"            # the VM's disks are root-only
+[ -f "$F/images/data.img" ] && chmod 0600 "$F/images/data.img"
+
+# Self-test the bundled QEMU on this phone (catches a loader/libc problem now).
+if "$F/host/lib/ld-linux-aarch64.so.1" --library-path "$F/host/lib" \
+     "$F/host/bin/qemu-system-aarch64" --version >/dev/null 2>&1; then
+  ui_print "- QEMU runs on this device"
 else
-  ui_print "- flipos: NOTE no guest images bundled — put Image + rootfs.erofs in $FLIPOS_DIR/images"
+  ui_print "! WARNING: bundled QEMU failed its self-test on this device"
 fi
-
-# Native Android qemu bundled in the zip (payload/qemu), if the release included one.
-if [ -x "$MODPATH/payload/qemu/qemu-system-aarch64" ]; then
-  cp -f "$MODPATH/payload/qemu/qemu-system-aarch64" "$FLIPOS_DIR/bin/" 2>/dev/null || true
-  cp -f "$MODPATH/payload/qemu/qemu-img" "$FLIPOS_DIR/bin/" 2>/dev/null || true
-  cp -f "$MODPATH/payload/qemu/lib/"*.so* "$FLIPOS_DIR/qemu/lib/" 2>/dev/null || true
-  ui_print "- flipos: bundled native qemu installed"
+if [ -c /dev/kvm ]; then
+  ui_print "- /dev/kvm found: flipos will use KVM (falls back to TCG if it fails)"
+else
+  ui_print "- no /dev/kvm: flipos will use TCG (software, slow)"
 fi
-
-# launcher + qemu bootstrap
-cp -f "$MODPATH/payload/run-flipos.sh"     "$FLIPOS_DIR/bin/" 2>/dev/null || true
-cp -f "$MODPATH/payload/bootstrap-qemu.sh" "$FLIPOS_DIR/bin/" 2>/dev/null || true
-chmod 0755 "$FLIPOS_DIR/bin/"*.sh 2>/dev/null || true
-
-set_perm_recursive "$FLIPOS_DIR" 0 0 0755 0644 2>/dev/null || true
-chmod 0755 "$FLIPOS_DIR/bin/"* 2>/dev/null || true
 
 ui_print " "
-ui_print "  flipos installed. It does NOT start at boot."
-if [ ! -x "$FLIPOS_DIR/bin/qemu-system-aarch64" ]; then
-  ui_print "  Provide a native Android qemu (no chroot):"
-  ui_print "      su -c sh $FLIPOS_DIR/bin/bootstrap-qemu.sh"
-fi
-ui_print "  Boot the OS (view over VNC at 127.0.0.1:5901):"
-ui_print "      su -c sh $FLIPOS_DIR/bin/run-flipos.sh"
+ui_print "  Done. flipos does NOT start at boot."
+ui_print "  Start/stop: press this module's Action button,"
+ui_print "  or open its WebUI, or: su -c sh $F/bin/flipos start"
+ui_print "  Viewer: your browser opens noVNC automatically;"
+ui_print "  or a VNC app at 127.0.0.1:5901."
 ui_print " "

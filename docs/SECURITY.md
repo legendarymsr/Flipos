@@ -117,8 +117,10 @@ powered off**; gives nothing against a live, unlocked device or a hostile host.
 The release is a **systemless KernelSU module** (`release/kernelsu-module/`): it
 installs to `/data/adb/modules/<id>/`, ships **no `system/` overlay**, and
 **auto-runs nothing at boot**. QEMU runs **directly on Android** as a plain
-userspace process (no Debian chroot); flipos — the native qemu, its images, and
-data — lives wholly under `/data`. It never writes a partition, never calls
+userspace process (no Debian chroot), using the QEMU + glibc that flipos' own
+Buildroot builds from pinned sources; flipos (QEMU, images, data) lives wholly
+under `/data`. VNC (5901), its websocket (5701) and the noVNC httpd (6080) bind
+**127.0.0.1 only**. It never writes a partition, never calls
 `dd`/`mkfs`/`fastboot`, and never touches `/system`,`/vendor`,`boot`,`vbmeta`, or
 `/dev/block/*`. QEMU opens `/dev/kvm` directly (root via KernelSU) for hardware
 acceleration. Uninstalling the module and deleting its `/data` dir removes flipos

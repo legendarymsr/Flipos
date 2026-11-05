@@ -97,3 +97,21 @@ BR2_PACKAGE_GNUPG2=y
 # pacman-key / makepkg / repo-add are bash scripts (#!/bin/bash).
 BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y   # bash is hidden behind this (it overlaps busybox)
 BR2_PACKAGE_BASH=y
+
+# --- Android host bundle: QEMU built for aarch64/glibc by this same toolchain.
+# post-build.sh moves it (plus the libraries only it needs and the glibc loader)
+# OUT of the guest rootfs into images/android-host/ — the guest never ships it.
+BR2_PACKAGE_QEMU=y
+BR2_PACKAGE_QEMU_SYSTEM=y
+BR2_PACKAGE_QEMU_SYSTEM_KVM=y
+BR2_PACKAGE_QEMU_SYSTEM_TCG=y
+# BR2_PACKAGE_QEMU_BLOBS is not set
+BR2_PACKAGE_QEMU_SLIRP=y
+BR2_PACKAGE_QEMU_FDT=y
+BR2_PACKAGE_QEMU_CHOOSE_TARGETS=y
+BR2_PACKAGE_QEMU_TARGET_AARCH64=y
+BR2_PACKAGE_QEMU_TOOLS=y
+# Buildroot only passes --enable-vnc to QEMU when libvncserver is selected.
+BR2_PACKAGE_LIBVNCSERVER=y
+# busybox httpd serves noVNC to the phone's browser (127.0.0.1 only).
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_FLIPOS_PATH)/board/flipos/busybox.fragment"

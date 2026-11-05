@@ -56,9 +56,5 @@ distclean: ## remove output, downloads, and ccache
 	rm -rf $(O) $(CURDIR)/dl $(CURDIR)/ccache
 
 .PHONY: release
-release: ## package the flashable KernelSU module zip (out/flipos-<ver>.zip)
+release: ## package the flashable KernelSU module zip (needs `make image`; out/flipos-<ver>.zip)
 	scripts/mkrelease.sh
-
-.PHONY: qemu-android
-qemu-android: ## cross-build a native Android qemu (NDK) into out/android-qemu
-	scripts/build-qemu-android.sh

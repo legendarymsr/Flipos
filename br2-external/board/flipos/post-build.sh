@@ -12,3 +12,7 @@ cat >> "$T/etc/inittab" <<'TAB'
 # flipos: Wayland session (flipos-wm, which starts foot)
 ::respawn:/usr/bin/flipos-session
 TAB
+
+# Android host bundle: move QEMU (built here for aarch64/glibc) out of the guest
+# into $BINARIES_DIR/android-host. The guest image never contains QEMU.
+python3 -I "$(dirname "$0")/android-bundle.py" "$T" "$BINARIES_DIR/android-host" "$BUILD_DIR"

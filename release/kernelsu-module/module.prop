@@ -1,6 +1,6 @@
 id=flipos
 name=flipos (QEMU mobile OS)
-version=v0.2.0
-versionCode=2
+version=v0.3.0
+versionCode=3
 author=legendarymsr
-description=Boots the flipos mobile OS in QEMU inside a self-contained Debian chroot under /data. Systemless: ships no system overlay, auto-runs nothing at boot, and never writes a partition.
+description=Runs the flipos mobile OS in a bundled QEMU directly on Android (KVM, TCG fallback). View it in your browser (noVNC) or any VNC app. Action button starts/stops it. Systemless: no overlay, nothing runs at boot, never writes a partition.

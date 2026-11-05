@@ -14,9 +14,13 @@ from the pinned Buildroot tree (so one tag fixes the whole set).
 - Buildroot submodule commit: `679b9ead7620bbf193620d1ebf56f53c1764d37a` (tag `2026.02.3`)
 - Linux: `6.18.57` (fetched + hash-verified by Buildroot at build time)
 
-## Native Android qemu (scripts/build-qemu-android.sh)
-All download-verified upstream; bump via env vars.
 - pacman 7.1.0 tarball: SHA-256 `530e50d7…2171`, GPG-verified (Allan McRae, Arch keyring).
-- Android NDK `r27d` · min API `28`
-- qemu `9.2.0` · glib `2.82.4` · pixman `0.44.2` · libslirp `4.8.0` · libffi `3.4.6` · pcre2 `10.44`
-- Output: `out/android-qemu/` (bionic-native binary + bundled libs), bundled by `make release`.
+
+## Android host bundle (QEMU on the phone)
+- **QEMU 10.2.0** and its libraries (glib, pixman, libslirp, dtc, zlib, …) and
+  **glibc** come from the pinned Buildroot tree, built by the same toolchain as the
+  guest and hash-verified by Buildroot. `board/flipos/android-bundle.py` moves them
+  out of the guest into `out/images/android-host/`, so the guest never ships QEMU.
+- **noVNC 1.7.0** (MPL-2.0): `https://github.com/novnc/noVNC.git` tag `v1.7.0`,
+  pinned to commit `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e`; `scripts/mkrelease.sh`
+  refuses any other commit.

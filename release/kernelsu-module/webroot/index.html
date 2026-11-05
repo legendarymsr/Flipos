@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>flipos</title>
+<style>
+ body{background:#1a1b26;color:#c0caf5;font:16px system-ui,sans-serif;margin:0;padding:16px}
+ h1{font-size:22px;color:#7aa2f7;margin:4px 0 12px}
+ button{display:block;width:100%;margin:8px 0;padding:14px;border:0;border-radius:12px;font-size:16px;background:#24283b;color:#c0caf5}
+ button.p{background:#7aa2f7;color:#1a1b26;font-weight:600}
+ pre{white-space:pre-wrap;background:#16161e;padding:12px;border-radius:10px;font-size:13px;min-height:4em}
+</style></head><body>
+<h1>flipos</h1>
+<button class="p" onclick="run('start',true)">Start &amp; open viewer</button>
+<button onclick="run('url',true)">Open viewer</button>
+<button onclick="run('status')">Status</button>
+<button onclick="run('stop')">Stop</button>
+<button onclick="run('log 30')">Guest console log</button>
+<pre id="o">Ready.</pre>
+<script>
+// KernelSU WebUI bridge: ksu.exec(cmd, optionsJSON, callbackName) -> cb(errno, stdout, stderr)
+let n=0;
+function run(c,open){
+  const o=document.getElementById('o'); o.textContent='flipos '+c+' …';
+  if(typeof ksu==='undefined'){o.textContent='Open this page from the KernelSU manager.';return;}
+  const cb='cb'+(n++);
+  window[cb]=(code,out,err)=>{
+    o.textContent=(out||'')+(err?'\n'+err:'');
+    const m=/browser: (\S+)/.exec(out||'');
+    if(open&&m) ksu.exec('am start -a android.intent.action.VIEW -d "'+m[1]+'"','{}','cbx');
+    delete window[cb];
+  };
+  window.cbx=()=>{};
+  ksu.exec('sh /data/flipos/bin/flipos '+c,'{}',cb);
+}
+</script></body></html>

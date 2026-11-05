@@ -10,9 +10,9 @@ from the pinned Buildroot tree (`docs/SOURCES.md`), so one tag fixes the set.
 | Linux 6.18.57 | the kernel (hardened, monolithic — `docs/KERNEL.md`) |
 | glibc | C library — chosen for later WebKitGTK browser compatibility |
 | BusyBox | core userland utilities in one small binary |
-| s6 + s6-rc | init + service supervision (not systemd): tiny, auditable |
+| BusyBox init | PID 1 + respawn of the session (Buildroot 2026.02 has no s6 init choice; s6 remains the plan) |
 | eudev | device-node manager + udev API that libinput/wlroots need |
-| seatd | seat/session management (GPU + input access without logind) |
+| libseat (built-in backend) | seat access for the compositor without logind or a seatd daemon |
 
 ## Phase 2 — Wayland compositor + terminal
 | Package | What / why |
@@ -41,6 +41,18 @@ from the pinned Buildroot tree (`docs/SOURCES.md`), so one tag fixes the set.
 | DejaVu fonts | foot needs at least one font |
 | e2fsprogs | formats /data on first boot |
 | mesa3d (softpipe) | wlroots requires EGL/GLES/GBM at build time; pixman still renders at run time |
+
+## Android host bundle (not in the guest)
+Built by the same Buildroot run, then moved OUT of the guest rootfs by
+`board/flipos/android-bundle.py` into `out/images/android-host/` for the zip.
+| Package | What / why |
+|---|---|
+| **qemu** 10.2.0 | runs flipos on the phone: KVM + TCG, VNC + websocket, slirp networking |
+| glib, pixman, libslirp, dtc, zlib, … | QEMU's libraries (bundled alongside it) |
+| glibc + `ld-linux-aarch64.so.1` | lets these binaries run on Android without a chroot |
+| busybox `httpd` | serves noVNC on 127.0.0.1 (the guest's busybox also gains the applet; unused there) |
+| libvncserver | not used; Buildroot gates QEMU's `--enable-vnc` on selecting it, and it's stripped from the guest |
+| noVNC 1.7.0 | in-browser VNC viewer (not built; static JS pinned by commit) |
 
 ## Rendering note
 Under QEMU there is no GPU, so the session launches with `WLR_RENDERER=pixman`

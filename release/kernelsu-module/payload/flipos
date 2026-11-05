@@ -1,0 +1,137 @@
+#!/system/bin/sh
+# flipos controller — runs flipos in QEMU DIRECTLY on Android (no chroot).
+#   flipos start    boot the VM (KVM if usable, else TCG) + noVNC web viewer
+#   flipos stop     stop the VM and the web viewer
+#   flipos status   show what is running and how
+#   flipos url      print the browser URL
+#   flipos log      tail the guest serial console
+# Everything listens on 127.0.0.1 only. Run as root (KernelSU: su -c flipos start).
+#
+# SAFETY: QEMU and httpd are ordinary processes started from /data/flipos. The
+# VM's disks are files in /data/flipos/images. Nothing writes a partition,
+# nothing mounts over Android, nothing starts at boot.
+#
+# Tunables (environment): ACCEL=tcg (force software), KVM_CPUS=4-6 (pin KVM to
+# one CPU cluster; "" = no pin), SMP, MEM_MB, RES=540x1320, DATA_SIZE=4G,
+# VNC_DISPLAY=1 (port 5901), WS_PORT=5701, HTTP_PORT=6080.
+set -u
+F=/data/flipos
+H="$F/host"                       # bundled QEMU + glibc (built by flipos' Buildroot)
+IMG="$F/images"; RUN="$F/run"
+mkdir -p "$RUN" "$F/tmp"
+export TMPDIR="$F/tmp"            # QEMU must not assume /tmp exists (it doesn't on Android)
+
+LD="$H/lib/ld-linux-aarch64.so.1"
+hostrun() { "$LD" --library-path "$H/lib" "$@"; }    # run a bundled glibc binary
+
+RES="${RES:-540x1320}"; XRES="${RES%x*}"; YRES="${RES#*x}"
+MEM_MB="${MEM_MB:-2048}"; DATA_SIZE="${DATA_SIZE:-4G}"
+VNC_DISPLAY="${VNC_DISPLAY:-1}"; WS_PORT="${WS_PORT:-5701}"; HTTP_PORT="${HTTP_PORT:-6080}"
+KVM_CPUS="${KVM_CPUS-4-6}"
+URL="http://127.0.0.1:$HTTP_PORT/vnc.html?host=127.0.0.1&port=$WS_PORT&path=&autoconnect=true&resize=scale&reconnect=true"
+
+alive() { [ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null; }
+say() { echo "flipos: $*"; }
+
+# "4-6" -> hex mask "70" for toybox taskset
+cpumask() {
+  lo="${1%-*}"; hi="${1#*-}"; m=0; i="$lo"
+  while [ "$i" -le "$hi" ]; do m=$((m | (1 << i))); i=$((i + 1)); done
+  printf '%x' "$m"
+}
+
+start_vm() {   # $1 = accel name, rest = accel args (optionally prefixed by taskset)
+  name="$1"; shift
+  rm -f "$RUN/qemu.pid"
+  : > "$RUN/serial.log"
+  "$@" \
+    -L "$H/share/qemu" -smp "$SMP" -m "$MEM_MB" \
+    -kernel "$IMG/Image" \
+    -append "root=/dev/vda ro rootfstype=erofs console=ttyAMA0" \
+    -drive file="$IMG/rootfs.erofs",if=none,format=raw,id=hd0,readonly=on -device virtio-blk-pci,drive=hd0 \
+    -drive file="$IMG/data.img",if=none,format=raw,id=hd1,cache=writeback,aio=threads -device virtio-blk-pci,drive=hd1 \
+    -device virtio-gpu-pci,xres="$XRES",yres="$YRES" \
+    -device virtio-tablet-pci -device virtio-keyboard-pci -device virtio-rng-pci -device virtio-balloon-pci \
+    -netdev user,id=n0 -device virtio-net-pci,netdev=n0,romfile= \
+    -display none -vnc "127.0.0.1:$VNC_DISPLAY,websocket=127.0.0.1:$WS_PORT" \
+    -serial "file:$RUN/serial.log" -monitor none \
+    -pidfile "$RUN/qemu.pid" -daemonize 2> "$RUN/qemu.err" || return 1
+  # a KVM vCPU that can't run on this core type dies right after startup
+  sleep 3
+  alive "$RUN/qemu.pid" || return 1
+  echo "$name" > "$RUN/accel"
+  return 0
+}
+
+cmd_start() {
+  if alive "$RUN/qemu.pid"; then say "already running ($(cat "$RUN/accel"))"; cmd_url; return 0; fi
+  [ -x "$LD" ] || { say "bundled QEMU missing in $H — reinstall the module"; return 1; }
+  for f in Image rootfs.erofs; do
+    [ -f "$IMG/$f" ] || { say "missing $IMG/$f — reinstall the module"; return 1; }
+  done
+  if [ ! -f "$IMG/data.img" ]; then   # sparse file; the guest formats it (ext4) on first boot
+    hostrun "$H/bin/qemu-img" create -q -f raw "$IMG/data.img" "$DATA_SIZE" || return 1
+    say "created $DATA_SIZE data.img (formatted by flipos on first boot)"
+  fi
+
+  Q="$LD --library-path $H/lib $H/bin/qemu-system-aarch64"
+  ok=""
+  if [ "${ACCEL:-}" != "tcg" ] && [ -c /dev/kvm ]; then
+    if [ -n "$KVM_CPUS" ] && command -v taskset >/dev/null; then
+      SMP="${SMP:-$(( ${KVM_CPUS#*-} - ${KVM_CPUS%-*} + 1 ))}"
+      say "trying KVM pinned to CPUs $KVM_CPUS (SMP=$SMP)"
+      start_vm "KVM (cpus $KVM_CPUS)" taskset "$(cpumask "$KVM_CPUS")" $Q \
+        -accel kvm -cpu host -M virt,gic-version=host && ok=1
+    fi
+    if [ -z "$ok" ]; then
+      SMP="${SMP:-4}"
+      say "trying KVM (unpinned)"
+      start_vm "KVM" $Q -accel kvm -cpu host -M virt,gic-version=host && ok=1
+    fi
+    [ -z "$ok" ] && say "KVM failed: $(tail -n 2 "$RUN/qemu.err" 2>/dev/null | tr '\n' ' ')"
+  fi
+  if [ -z "$ok" ]; then
+    SMP="${SMP:-4}"
+    say "using TCG (software emulation — slow)"
+    start_vm "TCG" $Q -accel tcg,thread=multi,tb-size=512 -cpu max -M virt,gic-version=3 && ok=1
+  fi
+  [ -n "$ok" ] || { say "QEMU failed to start:"; cat "$RUN/qemu.err"; return 1; }
+  # Ask Android's low-memory killer to spare the VM (runtime-only, per process).
+  echo -800 > "/proc/$(cat "$RUN/qemu.pid")/oom_score_adj" 2>/dev/null
+
+  if ! alive "$RUN/httpd.pid"; then
+    setsid "$LD" --library-path "$H/lib" "$H/bin/busybox" httpd -f \
+      -p "127.0.0.1:$HTTP_PORT" -h "$F/novnc" > /dev/null 2>&1 &
+    echo $! > "$RUN/httpd.pid"
+  fi
+  say "running with $(cat "$RUN/accel")"
+  say "VNC: 127.0.0.1:$((5900 + VNC_DISPLAY))   (any VNC app, e.g. AVNC)"
+  cmd_url
+}
+
+cmd_stop() {
+  for p in qemu httpd; do
+    if alive "$RUN/$p.pid"; then kill "$(cat "$RUN/$p.pid")" 2>/dev/null; say "stopped $p"; fi
+    rm -f "$RUN/$p.pid"
+  done
+  rm -f "$RUN/accel"
+}
+
+cmd_status() {
+  if alive "$RUN/qemu.pid"; then say "VM running, $(cat "$RUN/accel"), pid $(cat "$RUN/qemu.pid")"
+  else say "VM stopped"; fi
+  if alive "$RUN/httpd.pid"; then say "web viewer on 127.0.0.1:$HTTP_PORT"; else say "web viewer stopped"; fi
+  [ -c /dev/kvm ] && say "/dev/kvm present" || say "/dev/kvm absent (TCG only)"
+}
+
+cmd_url() { say "open in your browser: $URL"; }
+
+case "${1:-start}" in
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_stop; sleep 1; cmd_start ;;
+  status) cmd_status ;;
+  url) cmd_url ;;
+  log) tail -n "${2:-40}" "$RUN/serial.log" ;;
+  *) echo "usage: flipos start|stop|restart|status|url|log"; exit 2 ;;
+esac

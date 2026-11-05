@@ -65,7 +65,7 @@ rest of Buildroot's host deps (libncurses-dev, rsync, file, etc.).
   aggressively, or get more disk.
 - **No swap + 15 GiB RAM**: parallel LTO/WebKit builds can OOM. Keep `-j` modest.
 
-## 5. Phone-side audit — PENDING (run these in the Z Flip 4 Debian chroot)
+## 5. Phone-side audit — historical (written for the abandoned Debian-chroot plan)
 
 ```sh
 uname -a; cat /etc/os-release                 # confirm Debian arm64
@@ -91,7 +91,7 @@ Split the roles honestly:
 
 > **Confirmed by the owner:** the Z Flip 4 runs a **custom kernel that exposes
 > `/dev/kvm`**, so on-device flipos uses **`-accel kvm -cpu host`** (near-native),
-> not TCG. The launcher (`release/.../run-flipos.sh`) auto-detects this; `ACCEL=tcg`
+> not TCG. The controller (`/data/flipos/bin/flipos`) tries KVM first and falls back to TCG; `ACCEL=tcg`
 > forces software mode. This also makes `PTR_AUTH`/`BTI` real (native) on-device.
 
 This keeps the prompt's non-negotiables intact (never touch the phone's real

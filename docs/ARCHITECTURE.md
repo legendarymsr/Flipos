@@ -14,7 +14,8 @@
   `BR2_REPRODUCIBLE`, `SOURCE_DATE_EPOCH`; `make verify-repro` builds twice and
   diffs.
 - **Honest about the target.** flipos runs under `qemu-system-aarch64 -M virt`.
-  On the Z Flip 4 that QEMU runs inside a Debian chroot; QEMU — not hardware — is
+  On the Z Flip 4 that QEMU runs directly on Android (KernelSU module, KVM when
+  available); QEMU — not hardware — is
   the root of trust here (see `docs/SECURITY.md`, `docs/LIMITATIONS.md`).
 
 ## 2. Layered view
