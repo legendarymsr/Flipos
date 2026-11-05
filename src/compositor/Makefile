@@ -4,7 +4,7 @@ PKG_CONFIG ?= pkg-config
 WAYLAND_PROTOCOLS ?= $(shell $(PKG_CONFIG) --variable=pkgdatadir wayland-protocols)
 WAYLAND_SCANNER   ?= $(shell $(PKG_CONFIG) --variable=wayland_scanner wayland-scanner)
 PKGS = wlroots-0.19 wayland-server xkbcommon
-CFLAGS += $(shell $(PKG_CONFIG) --cflags $(PKGS)) -DWLR_USE_UNSTABLE -I. -std=c11 -O2
+CFLAGS += $(shell $(PKG_CONFIG) --cflags $(PKGS)) -DWLR_USE_UNSTABLE -I. -std=gnu11 -O2   # gnu: c11 strict mode hides POSIX (setenv, clock_gettime)
 LIBS   = $(shell $(PKG_CONFIG) --libs $(PKGS))
 
 all: flipos-wm
