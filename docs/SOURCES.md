@@ -16,6 +16,7 @@ from the pinned Buildroot tree (so one tag fixes the whole set).
 
 ## Native Android qemu (scripts/build-qemu-android.sh)
 All download-verified upstream; bump via env vars.
+- pacman 7.1.0 tarball: SHA-256 `530e50d7…2171`, GPG-verified (Allan McRae, Arch keyring).
 - Android NDK `r27d` · min API `28`
 - qemu `9.2.0` · glib `2.82.4` · pixman `0.44.2` · libslirp `4.8.0` · libffi `3.4.6` · pcre2 `10.44`
 - Output: `out/android-qemu/` (bionic-native binary + bundled libs), bundled by `make release`.

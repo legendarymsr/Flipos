@@ -9,6 +9,11 @@ GPGME_LICENSE_FILES = COPYING.LESSER COPYING
 GPGME_INSTALL_STAGING = YES
 GPGME_DEPENDENCIES = host-pkgconf libgpg-error libassuan gnupg2
 # No language bindings (no python/cpp/qt), skip the test suite.
-GPGME_CONF_OPTS = --enable-languages= --disable-gpg-test --disable-gpgsm-test \
+# Point configure at the cross sysroot's *-config scripts (same convention as
+# Buildroot's own gnupg2 package), or it won't find libgpg-error/libassuan.
+GPGME_CONF_OPTS = \
+	--with-libgpg-error-prefix=$(STAGING_DIR)/usr \
+	--with-libassuan-prefix=$(STAGING_DIR)/usr \
+	--enable-languages= --disable-gpg-test --disable-gpgsm-test \
 	--disable-gpgconf-test --disable-g13-test
 $(eval $(autotools-package))
