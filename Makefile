@@ -10,7 +10,9 @@ export BR2_DL_DIR := $(CURDIR)/dl
 export BR2_CCACHE_DIR := $(CURDIR)/ccache
 DEFCONFIG     := flipos_qemu_aarch64_defconfig
 # Reproducibility: pin the epoch to the pinned Buildroot tag's commit date.
-export SOURCE_DATE_EPOCH ?= 1704067200   # 2024-01-01; re-pinned in Phase 1
+# 2024-01-01; re-pinned in Phase 1. (No trailing comment on the value line —
+# make keeps the spaces before "#" and the value stops being an integer.)
+export SOURCE_DATE_EPOCH ?= 1704067200
 
 .DEFAULT_GOAL := help
 
