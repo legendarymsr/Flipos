@@ -1,0 +1,4 @@
+id     = "org.flipos.about"
+name   = "About"
+entry  = "foot -T About flipos-about"
+min_os = 1

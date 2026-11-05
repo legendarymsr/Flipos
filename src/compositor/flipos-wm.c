@@ -1,8 +1,9 @@
 /*
  * flipos-wm - a minimal, mobile-styled Wayland compositor (wlroots 0.19, C).
  * Derived from wlroots' tinywl reference; made phone-shaped: every app is
- * fullscreen (one at a time) and a terminal is launched on start.
- * Alt+Esc quits, Alt+F1 cycles apps, Alt+Return opens a terminal.
+ * maximized below a status bar (one at a time); layer-shell for the shell;
+ * a bottom gesture bar goes home. Alt+H home, Alt+F1 cycle apps,
+ * Alt+Return terminal, Alt+Esc quit.
  * SPDX-License-Identifier: CC0-1.0 (tinywl base) AND GPL-3.0-or-later (flipos changes)
  */
 #include <assert.h>
@@ -21,6 +22,7 @@
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/types/wlr_keyboard.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_pointer.h>
@@ -29,6 +31,7 @@
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
 
@@ -74,6 +77,17 @@ struct flipos_server {
 	struct wlr_output_layout *output_layout;
 	struct wl_list outputs;
 	struct wl_listener new_output;
+
+	/* flipos: layer-shell (status bar, home screen) and phone layout */
+	struct wlr_layer_shell_v1 *layer_shell;
+	struct wl_listener new_layer_surface;
+	struct wl_list layers;                    /* flipos_layer.link */
+	struct wlr_scene_tree *layer_trees[4];    /* background, bottom, top, overlay */
+	struct wlr_scene_tree *toplevel_tree;     /* apps, between bottom and top */
+	struct wlr_box usable;                    /* area left for apps */
+	struct wlr_scene_rect *gesture_bg, *gesture_pill;
+	struct wlr_xdg_decoration_manager_v1 *deco_mgr;
+	struct wl_listener new_decoration;
 };
 
 struct flipos_output {
@@ -98,6 +112,10 @@ struct flipos_toplevel {
 	struct wl_listener request_resize;
 	struct wl_listener request_maximize;
 	struct wl_listener request_fullscreen;
+	/* xdg-decoration: we ask apps to drop their own title bars (phone UI) */
+	struct wlr_xdg_toplevel_decoration_v1 *decoration;
+	struct wl_listener deco_request_mode;
+	struct wl_listener deco_destroy;
 };
 
 struct flipos_popup {
@@ -122,6 +140,8 @@ static void focus_toplevel(struct flipos_toplevel *toplevel) {
 		return;
 	}
 	struct flipos_server *server = toplevel->server;
+	/* An app hidden by "go home" becomes visible again when focused. */
+	wlr_scene_node_set_enabled(&toplevel->scene_tree->node, true);
 	struct wlr_seat *seat = server->seat;
 	struct wlr_surface *prev_surface = seat->keyboard_state.focused_surface;
 	struct wlr_surface *surface = toplevel->xdg_toplevel->base->surface;
@@ -200,6 +220,156 @@ static struct wlr_output *primary_output(struct flipos_server *server) {
 	return NULL;
 }
 
+#define FLIPOS_SHELL "flipos-shell"   /* status bar + home screen client */
+#define FLIPOS_GESTURE_H 28            /* bottom gesture bar: tap = home */
+
+/* A layer-shell surface (status bar, home screen, ...). */
+struct flipos_layer {
+	struct wl_list link;
+	struct flipos_server *server;
+	struct wlr_layer_surface_v1 *ls;
+	struct wlr_scene_layer_surface_v1 *sls;
+	struct wl_listener commit, map, unmap, destroy;
+};
+
+/* Lay out the phone screen: layer surfaces claim their exclusive zones (the
+ * status bar at the top), the compositor reserves the gesture bar at the
+ * bottom, and every app is sized to what is left. */
+static void arrange(struct flipos_server *server) {
+	struct wlr_output *out = primary_output(server);
+	if (out == NULL) {
+		return;
+	}
+	int w, h;
+	wlr_output_effective_resolution(out, &w, &h);
+	struct wlr_box full = { .x = 0, .y = 0, .width = w, .height = h };
+	struct wlr_box usable = { .x = 0, .y = 0, .width = w, .height = h - FLIPOS_GESTURE_H };
+	/* Higher layers first, so the bar's zone is taken before the home screen. */
+	for (int layer = 3; layer >= 0; layer--) {
+		struct flipos_layer *l;
+		wl_list_for_each(l, &server->layers, link) {
+			if (l->ls->initialized && (int)l->ls->current.layer == layer) {
+				wlr_scene_layer_surface_v1_configure(l->sls, &full, &usable);
+			}
+		}
+	}
+	server->usable = usable;
+
+	wlr_scene_rect_set_size(server->gesture_bg, w, FLIPOS_GESTURE_H);
+	wlr_scene_node_set_position(&server->gesture_bg->node, 0, h - FLIPOS_GESTURE_H);
+	wlr_scene_node_set_position(&server->gesture_pill->node,
+		(w - 120) / 2, h - FLIPOS_GESTURE_H / 2 - 2);
+
+	struct flipos_toplevel *t;
+	wl_list_for_each(t, &server->toplevels, link) {
+		wlr_xdg_toplevel_set_size(t->xdg_toplevel, usable.width, usable.height);
+		wlr_scene_node_set_position(&t->scene_tree->node, usable.x, usable.y);
+	}
+}
+
+/* "Home": hide every app (they keep running) and reveal the home screen. */
+static void go_home(struct flipos_server *server) {
+	struct flipos_toplevel *t;
+	wl_list_for_each(t, &server->toplevels, link) {
+		wlr_scene_node_set_enabled(&t->scene_tree->node, false);
+	}
+	wlr_seat_keyboard_notify_clear_focus(server->seat);
+}
+
+static void layer_commit(struct wl_listener *listener, void *data) {
+	struct flipos_layer *l = wl_container_of(listener, l, commit);
+	if (l->ls->initial_commit || l->ls->current.committed != 0) {
+		arrange(l->server);
+	}
+}
+
+/* wlroots only applies a layer surface's exclusive zone once it is mapped, so
+ * re-layout on map — otherwise the home screen would sit under the bar. */
+static void layer_map(struct wl_listener *listener, void *data) {
+	struct flipos_layer *l = wl_container_of(listener, l, map);
+	arrange(l->server);
+}
+
+static void layer_unmap(struct wl_listener *listener, void *data) {
+	struct flipos_layer *l = wl_container_of(listener, l, unmap);
+	arrange(l->server);
+}
+
+static void layer_destroy(struct wl_listener *listener, void *data) {
+	struct flipos_layer *l = wl_container_of(listener, l, destroy);
+	struct flipos_server *server = l->server;
+	wl_list_remove(&l->commit.link);
+	wl_list_remove(&l->map.link);
+	wl_list_remove(&l->unmap.link);
+	wl_list_remove(&l->destroy.link);
+	wl_list_remove(&l->link);
+	free(l);
+	arrange(server);
+}
+
+static void server_new_layer_surface(struct wl_listener *listener, void *data) {
+	struct flipos_server *server =
+		wl_container_of(listener, server, new_layer_surface);
+	struct wlr_layer_surface_v1 *ls = data;
+	if (ls->output == NULL) {
+		ls->output = primary_output(server);
+	}
+	if (ls->output == NULL || ls->pending.layer > 3) {
+		wlr_layer_surface_v1_destroy(ls);
+		return;
+	}
+	struct flipos_layer *l = calloc(1, sizeof(*l));
+	l->server = server;
+	l->ls = ls;
+	l->sls = wlr_scene_layer_surface_v1_create(server->layer_trees[ls->pending.layer], ls);
+	l->commit.notify = layer_commit;
+	wl_signal_add(&ls->surface->events.commit, &l->commit);
+	l->map.notify = layer_map;
+	wl_signal_add(&ls->surface->events.map, &l->map);
+	l->unmap.notify = layer_unmap;
+	wl_signal_add(&ls->surface->events.unmap, &l->unmap);
+	l->destroy.notify = layer_destroy;
+	wl_signal_add(&ls->events.destroy, &l->destroy);
+	wl_list_insert(&server->layers, &l->link);
+}
+
+/* Tell the app "the compositor decorates" so it drops its own title bar —
+ * flipos draws none, as on a phone. Only valid once the surface has done its
+ * initial commit, so this is also called from the initial-commit handler. */
+static void set_server_side_decoration(struct flipos_toplevel *t) {
+	if (t->decoration != NULL && t->xdg_toplevel->base->initialized) {
+		wlr_xdg_toplevel_decoration_v1_set_mode(t->decoration,
+			WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+	}
+}
+
+static void deco_request_mode(struct wl_listener *listener, void *data) {
+	struct flipos_toplevel *t = wl_container_of(listener, t, deco_request_mode);
+	set_server_side_decoration(t);
+}
+
+static void deco_destroy(struct wl_listener *listener, void *data) {
+	struct flipos_toplevel *t = wl_container_of(listener, t, deco_destroy);
+	wl_list_remove(&t->deco_request_mode.link);
+	wl_list_remove(&t->deco_destroy.link);
+	t->decoration = NULL;
+}
+
+static void server_new_decoration(struct wl_listener *listener, void *data) {
+	struct wlr_xdg_toplevel_decoration_v1 *dec = data;
+	struct wlr_scene_tree *tree = dec->toplevel->base->data;
+	struct flipos_toplevel *t = tree != NULL ? tree->node.data : NULL;
+	if (t == NULL) {
+		return;
+	}
+	t->decoration = dec;
+	t->deco_request_mode.notify = deco_request_mode;
+	wl_signal_add(&dec->events.request_mode, &t->deco_request_mode);
+	t->deco_destroy.notify = deco_destroy;
+	wl_signal_add(&dec->events.destroy, &t->deco_destroy);
+	set_server_side_decoration(t);
+}
+
 static bool handle_keybinding(struct flipos_server *server, xkb_keysym_t sym) {
 	/*
 	 * Here we handle compositor keybindings. This is when the compositor is
@@ -224,6 +394,10 @@ static bool handle_keybinding(struct flipos_server *server, xkb_keysym_t sym) {
 	case XKB_KEY_Return:
 		/* Alt+Return opens a new terminal. */
 		spawn(FLIPOS_TERMINAL);
+		break;
+	case XKB_KEY_h:
+		/* Alt+H goes home (same as tapping the gesture bar). */
+		go_home(server);
 		break;
 	default:
 		return false;
@@ -403,7 +577,8 @@ static struct flipos_toplevel *desktop_toplevel_at(
 	while (tree != NULL && tree->node.data == NULL) {
 		tree = tree->node.parent;
 	}
-	return tree->node.data;
+	/* Layer surfaces (bar, home) belong to no toplevel: tree ends up NULL. */
+	return tree != NULL ? tree->node.data : NULL;
 }
 
 static void reset_cursor_mode(struct flipos_server *server) {
@@ -552,6 +727,18 @@ static void server_cursor_button(struct wl_listener *listener, void *data) {
 	struct flipos_server *server =
 		wl_container_of(listener, server, cursor_button);
 	struct wlr_pointer_button_event *event = data;
+	/* Tap on the bottom gesture bar: go home (not delivered to any client). */
+	struct wlr_output *out = primary_output(server);
+	if (out != NULL) {
+		int w, h;
+		wlr_output_effective_resolution(out, &w, &h);
+		if (server->cursor->y >= h - FLIPOS_GESTURE_H) {
+			if (event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+				go_home(server);
+			}
+			return;
+		}
+	}
 	/* Notify the client with pointer focus that a button press has occurred */
 	wlr_seat_pointer_notify_button(server->seat,
 			event->time_msec, event->button, event->state);
@@ -689,6 +876,7 @@ static void server_new_output(struct wl_listener *listener, void *data) {
 		wlr_output);
 	struct wlr_scene_output *scene_output = wlr_scene_output_create(server->scene, wlr_output);
 	wlr_scene_output_layout_add_output(server->scene_layout, l_output, scene_output);
+	arrange(server);
 }
 
 static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
@@ -697,8 +885,9 @@ static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
 
 	wl_list_insert(&toplevel->server->toplevels, &toplevel->link);
 
-	/* Phone layout: pin the app to the top-left; fullscreen fills the screen. */
-	wlr_scene_node_set_position(&toplevel->scene_tree->node, 0, 0);
+	/* Phone layout: the app fills the area below the status bar. */
+	wlr_scene_node_set_position(&toplevel->scene_tree->node,
+		toplevel->server->usable.x, toplevel->server->usable.y);
 
 	focus_toplevel(toplevel);
 }
@@ -720,12 +909,13 @@ static void xdg_toplevel_commit(struct wl_listener *listener, void *data) {
 	struct flipos_toplevel *toplevel = wl_container_of(listener, toplevel, commit);
 
 	if (toplevel->xdg_toplevel->base->initial_commit) {
-		/* flipos is a phone compositor: fullscreen every app to the display,
-		 * so one app fills the screen at a time. */
-		struct wlr_output *out = primary_output(toplevel->server);
-		if (out != NULL) {
-			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, out->width, out->height);
-			wlr_xdg_toplevel_set_fullscreen(toplevel->xdg_toplevel, true);
+		/* flipos is a phone compositor: one app at a time, maximized to the
+		 * area between the status bar and the gesture bar. */
+		struct wlr_box *u = &toplevel->server->usable;
+		if (u->width > 0 && u->height > 0) {
+			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, u->width, u->height);
+			wlr_xdg_toplevel_set_maximized(toplevel->xdg_toplevel, true);
+			set_server_side_decoration(toplevel);
 		} else {
 			wlr_xdg_toplevel_set_size(toplevel->xdg_toplevel, 0, 0);
 		}
@@ -736,6 +926,11 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	/* Called when the xdg_toplevel is destroyed. */
 	struct flipos_toplevel *toplevel = wl_container_of(listener, toplevel, destroy);
 
+	if (toplevel->decoration != NULL) {
+		wl_list_remove(&toplevel->deco_request_mode.link);
+		wl_list_remove(&toplevel->deco_destroy.link);
+		toplevel->decoration = NULL;
+	}
 	wl_list_remove(&toplevel->map.link);
 	wl_list_remove(&toplevel->unmap.link);
 	wl_list_remove(&toplevel->commit.link);
@@ -838,7 +1033,7 @@ static void server_new_xdg_toplevel(struct wl_listener *listener, void *data) {
 	toplevel->server = server;
 	toplevel->xdg_toplevel = xdg_toplevel;
 	toplevel->scene_tree =
-		wlr_scene_xdg_surface_create(&toplevel->server->scene->tree, xdg_toplevel->base);
+		wlr_scene_xdg_surface_create(toplevel->server->toplevel_tree, xdg_toplevel->base);
 	toplevel->scene_tree->node.data = toplevel;
 	xdg_toplevel->base->data = toplevel->scene_tree;
 
@@ -999,6 +1194,25 @@ int main(int argc, char *argv[]) {
 	server.scene = wlr_scene_create();
 	server.scene_layout = wlr_scene_attach_output_layout(server.scene, server.output_layout);
 
+	/* Stacking, bottom to top: background (home screen), bottom, apps, top
+	 * (status bar), overlay (gesture bar). */
+	server.layer_trees[0] = wlr_scene_tree_create(&server.scene->tree);
+	server.layer_trees[1] = wlr_scene_tree_create(&server.scene->tree);
+	server.toplevel_tree = wlr_scene_tree_create(&server.scene->tree);
+	server.layer_trees[2] = wlr_scene_tree_create(&server.scene->tree);
+	server.layer_trees[3] = wlr_scene_tree_create(&server.scene->tree);
+	const float bar_bg[4] = { 0.067f, 0.071f, 0.106f, 1.0f };   /* #11121b */
+	const float pill[4] = { 0.753f, 0.792f, 0.961f, 1.0f };     /* #c0caf5 */
+	server.gesture_bg = wlr_scene_rect_create(server.layer_trees[3], 0, 0, bar_bg);
+	server.gesture_pill = wlr_scene_rect_create(server.layer_trees[3], 120, 5, pill);
+	wl_list_init(&server.layers);
+	server.layer_shell = wlr_layer_shell_v1_create(server.wl_display, 4);
+	server.new_layer_surface.notify = server_new_layer_surface;
+	wl_signal_add(&server.layer_shell->events.new_surface, &server.new_layer_surface);
+	server.deco_mgr = wlr_xdg_decoration_manager_v1_create(server.wl_display);
+	server.new_decoration.notify = server_new_decoration;
+	wl_signal_add(&server.deco_mgr->events.new_toplevel_decoration, &server.new_decoration);
+
 	/* Set up xdg-shell version 3. The xdg-shell is a Wayland protocol which is
 	 * used for application windows. For more detail on shells, refer to
 	 * https://drewdevault.com/2018/07/29/Wayland-shells.html.
@@ -1081,9 +1295,9 @@ int main(int argc, char *argv[]) {
 	/* Set the WAYLAND_DISPLAY environment variable to our socket and run the
 	 * startup command if requested. */
 	setenv("WAYLAND_DISPLAY", socket, true);
-	/* The OS ships with a terminal: launch it by default so there is always a
-	 * shell on screen. Override the startup app with -s "<cmd>". */
-	spawn(startup_cmd ? startup_cmd : FLIPOS_TERMINAL);
+	/* Start the phone shell (status bar + home screen); the terminal is an
+	 * app on the home screen. Override the startup command with -s "<cmd>". */
+	spawn(startup_cmd ? startup_cmd : FLIPOS_SHELL);
 	/* Run the Wayland event loop. This does not return until you exit the
 	 * compositor. Starting the backend rigged up all of the necessary event
 	 * loop configuration to listen to libinput events, DRM events, generate

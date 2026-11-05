@@ -25,6 +25,8 @@ from the pinned Buildroot tree (`docs/SOURCES.md`), so one tag fixes the set.
 | wlroots 0.19 | the compositor library flipos-wm is built on |
 | **foot** | the bundled **terminal** — a tiny, fast FOSS Wayland VT |
 | **flipos-wm** | our **self-built** mobile compositor (`src/compositor/`) |
+| **flipos-shell** | our status bar + home screen (`src/shell/`) |
+| fcft | font rasterizing for the shell (already required by foot) |
 
 ## Phase 3 — app package manager (pacman)
 | Package | What / why |

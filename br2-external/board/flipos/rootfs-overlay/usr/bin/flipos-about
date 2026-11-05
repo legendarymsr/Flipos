@@ -1,0 +1,13 @@
+#!/bin/sh
+# "About" app: system facts, honestly reported. Runs in a terminal window.
+echo "flipos"
+echo "------"
+echo "Kernel:   $(uname -sr) ($(uname -m))"
+echo "Uptime:   $(cut -d' ' -f1 /proc/uptime | cut -d. -f1)s"
+awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf "Memory:   %d MB free of %d MB\n", a/1024, t/1024}' /proc/meminfo
+df -h /data 2>/dev/null | awk 'NR==2{print "Storage:  " $4 " free of " $2 " (/data)"}'
+echo "Apps:     $(ls /usr/share/flipos/apps /data/appfs/usr/share/flipos/apps 2>/dev/null | grep -c '\.toml$')"
+echo "Battery:  none (QEMU has no battery)"
+echo
+echo "Tap the bar at the bottom to go home."
+read -r _ 2>/dev/null || sleep 3600

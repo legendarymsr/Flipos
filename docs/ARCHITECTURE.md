@@ -160,7 +160,8 @@ this maps to verified boot. Optional fscrypt on `/data/data/*` keyed from the PI
 | s6 service tree | [spec] |
 | flipos-wm compositor | **[scaffold]** — `src/compositor/flipos-wm.c` (wlroots 0.19, fullscreen-per-app, spawns a terminal); builds via the `flipos-wm` Buildroot package |
 | Terminal (foot) | **[scaffold]** — bundled via Buildroot `foot`, launched by the compositor |
-| Shell surfaces (bar/lock/home/drawer/shade/recents) | [spec] |
+| Status bar + home screen (`flipos-shell`) | **[done]** — boot-tested under QEMU: icons launch apps, gesture bar goes home |
+| Lock screen, app drawer, notification shade, recents, swipe gestures | [spec] |
 | pacman app manager (packaging + repo) | **[scaffold]** — pacman/gpgme Buildroot packages + /etc/pacman.conf + flipos-pkg; example PKGBUILD in `repo/` |
 | flipos-launch / permd | [spec] |
 | flipd / notifyd | [spec] |

@@ -3,11 +3,12 @@
 A minimal, phone-shaped wlroots compositor in C. Derived from wlroots' **tinywl**
 reference (exact 0.19.2 API), made mobile:
 
-- **One app at a time, fullscreen** — every xdg-toplevel is sized to the output
-  and fullscreened on its initial commit; pinned to the top-left.
-- **Ships a terminal** — launches `foot` on start, so the OS always has a shell.
-  `-s "<cmd>"` overrides the startup app.
-- **Keys**: `Alt+Esc` quit · `Alt+F1` cycle apps · `Alt+Return` new terminal.
+- **One app at a time, maximized** between the status bar and a bottom gesture
+  bar; apps are asked to drop their own title bars (xdg-decoration, server-side).
+- **wlr-layer-shell** for the phone shell (`flipos-shell`: status bar + home
+  screen), which is what starts at boot (`-s "<cmd>"` overrides).
+- **Gesture bar**: tapping it (or `Alt+H`) goes home — apps are hidden, not
+  killed. `Alt+F1` cycles apps · `Alt+Return` terminal · `Alt+Esc` quit.
 - Input: the virtio tablet/keyboard via `wlr_cursor`/xkb (touch-like).
 - Software rendering (`WLR_RENDERER=pixman`) so it works with no GPU under QEMU.
 

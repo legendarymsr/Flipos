@@ -20,3 +20,9 @@
 ## Not yet built
 - Everything past the build-system spine: kernel build, compositor, shell,
   services, apps, sandbox. This file is updated as each lands.
+
+## Apps are not sandboxed yet
+The home screen launches an app's manifest `entry` directly, as the session
+user (**root**). The `flipos-launch` sandbox (per-app UID, namespaces, Landlock,
+seccomp, cgroups — `docs/SECURITY.md` §3) is designed but not built, so today an
+app can do anything root can inside the guest. Only install apps you trust.

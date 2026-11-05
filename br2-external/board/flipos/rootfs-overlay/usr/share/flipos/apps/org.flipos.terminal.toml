@@ -1,0 +1,4 @@
+id     = "org.flipos.terminal"
+name   = "Terminal"
+entry  = "foot"
+min_os = 1

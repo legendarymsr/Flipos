@@ -1,0 +1,8 @@
+config BR2_PACKAGE_FLIPOS_SHELL
+	bool "flipos-shell (status bar + home screen)"
+	depends on BR2_PACKAGE_FLIPOS_WM
+	# wayland, wayland-protocols and pixman come with flipos-wm (via wlroots)
+	select BR2_PACKAGE_FCFT
+	help
+	  flipos's phone shell: a status bar and a home screen app grid,
+	  drawn with fcft + pixman as wlr-layer-shell surfaces.

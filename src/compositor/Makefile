@@ -14,9 +14,14 @@ xdg-shell-protocol.h:
 	$(WAYLAND_SCANNER) server-header \
 		$(WAYLAND_PROTOCOLS)/stable/xdg-shell/xdg-shell.xml $@
 
-flipos-wm: flipos-wm.c xdg-shell-protocol.h
+# wlr-layer-shell XML is vendored from wlroots 0.19.2 (MIT); wlroots' public
+# header includes the generated server header, so we must provide it.
+wlr-layer-shell-unstable-v1-protocol.h: wlr-layer-shell-unstable-v1.xml
+	$(WAYLAND_SCANNER) server-header $< $@
+
+flipos-wm: flipos-wm.c xdg-shell-protocol.h wlr-layer-shell-unstable-v1-protocol.h
 	$(CC) $(CFLAGS) flipos-wm.c $(LDFLAGS) $(LIBS) -o $@
 
 clean:
-	rm -f flipos-wm xdg-shell-protocol.h
+	rm -f flipos-wm xdg-shell-protocol.h wlr-layer-shell-unstable-v1-protocol.h
 .PHONY: all clean
