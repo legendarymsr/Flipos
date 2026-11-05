@@ -33,6 +33,11 @@ from the pinned Buildroot tree (`docs/SOURCES.md`), so one tag fixes the set.
 | **gpgme** 1.24.2 | GPG signature verification for pacman (br2-external package) |
 | gnupg2 | provides `gpg`/`pacman-key` for the flipos keyring |
 | libarchive, libcurl, openssl | pacman deps: package extraction, downloads, crypto |
+| bash | pacman-key, makepkg and repo-add are bash scripts |
+| xkeyboard-config | keyboard layout data; without it the compositor cannot build a keymap |
+| DejaVu fonts | foot needs at least one font |
+| e2fsprogs | formats /data on first boot |
+| mesa3d (softpipe) | wlroots requires EGL/GLES/GBM at build time; pixman still renders at run time |
 
 ## Rendering note
 Under QEMU there is no GPU, so the session launches with `WLR_RENDERER=pixman`

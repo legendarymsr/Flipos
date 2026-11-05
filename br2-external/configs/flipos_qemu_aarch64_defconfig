@@ -28,6 +28,8 @@ BR2_INIT_BUSYBOX=y
 # BR2_TARGET_GENERIC_REMOUNT_ROOTFS_RW is not set
 # Serial console login (dev builds: no root password).
 BR2_TARGET_GENERIC_GETTY_PORT="ttyAMA0"
+# foot requires a UTF-8 locale; glibc does not build C.UTF-8 in, so generate it.
+BR2_GENERATE_LOCALE="C.UTF-8"
 BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
 BR2_PACKAGE_SEATD=y
 
@@ -75,6 +77,9 @@ BR2_PACKAGE_E2FSPROGS=y
 BR2_PACKAGE_WAYLAND=y
 BR2_PACKAGE_WAYLAND_PROTOCOLS=y
 BR2_PACKAGE_LIBXKBCOMMON=y
+# Keyboard layout data (/usr/share/X11/xkb). Without it libxkbcommon cannot
+# compile a keymap and the compositor exits when the keyboard appears.
+BR2_PACKAGE_XKEYBOARD_CONFIG=y
 BR2_PACKAGE_LIBINPUT=y
 BR2_PACKAGE_LIBDRM=y
 BR2_PACKAGE_WLROOTS=y
@@ -84,3 +89,6 @@ BR2_PACKAGE_FLIPOS_WM=y
 # ---- App package manager: pacman (installs flipos apps into /data) ----
 BR2_PACKAGE_PACMAN=y
 BR2_PACKAGE_GNUPG2=y
+# pacman-key / makepkg / repo-add are bash scripts (#!/bin/bash).
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y   # bash is hidden behind this (it overlaps busybox)
+BR2_PACKAGE_BASH=y

@@ -1,11 +1,12 @@
 #!/bin/sh
 # Start the flipos Wayland session (respawned by BusyBox init). seatd provides
-# the seat; flipos-wm launches the terminal.
-sleep 1                                         # don't hot-loop if seatd isn't up yet
+# libseat (built-in backend) provides the seat; flipos-wm launches the terminal.
+sleep 1                                         # avoid a hot respawn loop on failure
 export XDG_RUNTIME_DIR=/run/user/0
 mkdir -p "$XDG_RUNTIME_DIR"; chmod 0700 "$XDG_RUNTIME_DIR"
 export XDG_CACHE_HOME=/tmp/cache                # root fs is read-only
-export LIBSEAT_BACKEND=seatd
+export LANG=C.UTF-8                             # foot needs a UTF-8 locale
+export LIBSEAT_BACKEND=builtin               # in-process seat (we run as root)
 export WLR_RENDERER="${WLR_RENDERER:-pixman}"   # CPU rendering; no GPU under QEMU
 export WLR_BACKENDS="${WLR_BACKENDS:-drm,libinput}"  # display + virtio tablet/keyboard
 exec flipos-wm "$@"

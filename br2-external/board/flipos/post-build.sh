@@ -3,12 +3,12 @@
 set -eu
 T="$1"
 mkdir -p "$T/data"                     # mountpoint for the ext4 data image (vdb)
-# BusyBox init: keep seatd + the Wayland session alive (respawn). The compositor
-# launches the terminal. The serial getty stays for a root shell.
-if ! grep -q flipos-session "$T/etc/inittab"; then
-  cat >> "$T/etc/inittab" <<'TAB'
-# flipos: seat daemon + Wayland session (flipos-wm, which starts foot)
-::respawn:/usr/bin/seatd
+# BusyBox init: keep the Wayland session alive (respawn); the compositor launches
+# the terminal. libseat runs its built-in (in-process) seat backend — Buildroot's
+# seatd ships no daemon — so no seatd process is needed. The serial getty stays.
+# Regenerate our block every build (TARGET_DIR persists across rebuilds).
+sed -i '/# flipos:/d; /\/usr\/bin\/seatd/d; /\/usr\/bin\/flipos-session/d' "$T/etc/inittab"
+cat >> "$T/etc/inittab" <<'TAB'
+# flipos: Wayland session (flipos-wm, which starts foot)
 ::respawn:/usr/bin/flipos-session
 TAB
-fi
