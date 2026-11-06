@@ -3,8 +3,11 @@
  *
  * A plain Wayland client using wlr-layer-shell:
  *   - status bar: TOP layer, anchored to the top edge, reserves BAR_H pixels
- *     (exclusive zone) so apps are laid out below it. Shows the time and the
- *     network state.
+ *     (exclusive zone) so apps are laid out below it. Clock on the left; network
+ *     and (only if the system has one) battery icons on the right. Tap it or
+ *     swipe down on it to pull down the quick-settings panel: big clock, Lock /
+ *     Terminal / Restart / Power off tiles and a live system card (IP, memory,
+ *     storage, uptime, CPU). Tap outside a tile or swipe up to close it.
  *   - lock screen: ext-session-lock (the compositor enforces it: nothing else
  *     is shown or gets input while locked, even if this process dies). PIN is
  *     stored as an Argon2id hash; failed attempts back off exponentially.
@@ -35,6 +38,10 @@
 #include <fcntl.h>
 #include <sys/random.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <fcft/fcft.h>
 #include <pixman.h>
@@ -56,6 +63,11 @@
 #define C_DIM      0x565f89
 #define C_ACCENT   0x7aa2f7
 #define C_OK       0x9ece6a
+#define C_CARD     0x24283b
+#define C_RED      0xf7768e
+
+#define GESTURE_H  28      /* compositor's gesture strip at the bottom (flipos-wm) */
+#define SWIPE      40      /* px of vertical travel that counts as a swipe */
 
 static const uint32_t tile_colors[] = {
 	0x7aa2f7, 0xbb9af7, 0x7dcfff, 0x9ece6a, 0xe0af68, 0xf7768e, 0x2ac3de, 0xff9e64,
@@ -94,6 +106,12 @@ static struct wl_output *output;
 static struct wl_keyboard *keyboard;
 
 static struct surf bar = { .kind = KIND_BAR };
+/* quick-settings panel: the bar's own surface, grown to (almost) full height */
+static bool shade_open;
+static int shade_armed = -1;        /* tile awaiting a confirming second tap */
+static int output_h;                /* from wl_output.mode */
+static double press_y;
+static struct wl_surface *press_surface;
 static struct surf home = { .kind = KIND_HOME };
 static struct surf lock = { .kind = KIND_LOCK };
 
@@ -348,35 +366,212 @@ static void launch(const struct app *a) {
 
 /* ---------- rendering the two surfaces ---------- */
 
-static bool network_up(void) {
-	FILE *f = fopen("/sys/class/net/eth0/operstate", "r");
-	char st[16] = "";
-	if (f) {
-		if (!fgets(st, sizeof(st), f)) st[0] = '\0';
-		fclose(f);
-	}
-	return strncmp(st, "up", 2) == 0;
+static bool read_line(const char *path, char *out, size_t n) {
+	FILE *f = fopen(path, "r");
+	if (!f) return false;
+	bool ok = fgets(out, (int)n, f) != NULL;
+	fclose(f);
+	return ok;
 }
 
-static void draw_bar(pixman_image_t *img, int w, int h) {
-	fill(img, C_BAR, 0, 0, w, h);
-	int base = (h + font->ascent - font->descent) / 2;
-	draw_text(img, font, "flipos", 14, base, C_ACCENT);
+/* First non-loopback IPv4 address that is up, e.g. "10.0.2.15". */
+static bool ipv4_addr(char *out, size_t n) {
+	struct ifaddrs *ifa, *i;
+	bool found = false;
+	if (getifaddrs(&ifa) != 0) return false;
+	for (i = ifa; i; i = i->ifa_next) {
+		if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET) continue;
+		if (strcmp(i->ifa_name, "lo") == 0) continue;
+		inet_ntop(AF_INET, &((struct sockaddr_in *)i->ifa_addr)->sin_addr, out, (socklen_t)n);
+		found = true;
+		break;
+	}
+	freeifaddrs(ifa);
+	return found;
+}
 
-	char clock[16];
+static bool network_up(void) {
+	char ip[INET_ADDRSTRLEN];
+	return ipv4_addr(ip, sizeof(ip));
+}
+
+/* Battery percentage from the kernel, or -1 when there is no battery (QEMU has
+ * none, so the icon is simply not drawn - no fake numbers). */
+static int battery_pct(bool *charging) {
+	DIR *d = opendir("/sys/class/power_supply");
+	int pct = -1;
+	*charging = false;
+	if (!d) return -1;
+	struct dirent *e;
+	while ((e = readdir(d)) && pct < 0) {
+		char path[300], buf[32];
+		snprintf(path, sizeof(path), "/sys/class/power_supply/%s/type", e->d_name);
+		if (!read_line(path, buf, sizeof(buf)) || strncmp(buf, "Battery", 7) != 0) continue;
+		snprintf(path, sizeof(path), "/sys/class/power_supply/%s/capacity", e->d_name);
+		if (read_line(path, buf, sizeof(buf))) pct = atoi(buf);
+		snprintf(path, sizeof(path), "/sys/class/power_supply/%s/status", e->d_name);
+		if (read_line(path, buf, sizeof(buf))) *charging = strncmp(buf, "Charging", 8) == 0;
+	}
+	closedir(d);
+	return pct;
+}
+
+/* Rounded rect into a pixman image (uses the raw buffer). */
+static void rrect(pixman_image_t *img, uint32_t c, int x, int y, int w, int h, int r) {
+	fill_rounded(pixman_image_get_data(img), pixman_image_get_stride(img) / 4,
+		pixman_image_get_width(img), pixman_image_get_height(img), c, x, y, w, h, r);
+}
+
+/* Network icon: four rising bars; dimmed with a slash when offline.
+ * Returns its width. */
+static int draw_net_icon(pixman_image_t *img, int x, int cy, bool up) {
+	uint32_t c = up ? C_FG : C_DIM;
+	for (int i = 0; i < 4; i++) {
+		int bh = 4 + i * 3;
+		rrect(img, c, x + i * 5, cy + 7 - bh, 3, bh, 1);
+	}
+	if (!up) {
+		for (int i = 0; i < 16; i++) fill(img, C_RED, x + i, cy - 6 + (i * 13) / 16, 2, 2);
+	}
+	return 18;
+}
+
+/* Battery icon with fill level and percentage. Returns its width. */
+static int draw_batt_icon(pixman_image_t *img, int x, int cy, int pct, bool charging) {
+	char t[16];
+	snprintf(t, sizeof(t), "%d%%", pct);
+	int tw = text_width(font_small, t);
+	draw_text(img, font_small, t, x, cy + 5, C_FG);
+	x += tw + 4;
+	uint32_t c = charging ? C_OK : pct <= 15 ? C_RED : C_FG;
+	rrect(img, C_FG, x, cy - 6, 22, 12, 3);
+	rrect(img, C_BAR, x + 1, cy - 5, 20, 10, 2);
+	rrect(img, C_FG, x + 22, cy - 2, 2, 4, 1);
+	int fw = (18 * (pct < 0 ? 0 : pct > 100 ? 100 : pct)) / 100;
+	if (fw > 0) rrect(img, c, x + 2, cy - 4, fw, 8, 1);
+	return tw + 4 + 24;
+}
+
+static void clock_str(char *out, size_t n, const char *fmt) {
 	time_t now = time(NULL);
 	struct tm tm;
 	localtime_r(&now, &tm);
-	strftime(clock, sizeof(clock), "%H:%M", &tm);
-	int cw = text_width(font, clock);
-	draw_text(img, font, clock, w - 14 - cw, base, C_FG);
+	strftime(out, n, fmt, &tm);
+}
 
-	bool up = network_up();
-	const char *net = up ? "net" : "offline";
-	int nw = text_width(font_small, net);
-	int sbase = (h + font_small->ascent - font_small->descent) / 2;
-	draw_text(img, font_small, net, w - 14 - cw - 16 - nw, sbase, up ? C_OK : C_DIM);
-	/* No battery shown: QEMU has none, and the simulated one isn't built yet. */
+/* ---------- quick-settings panel ---------- */
+
+enum { T_LOCK, T_TERM, T_REBOOT, T_POWEROFF, N_TILES };
+static const char *tile_title[N_TILES] = { "Lock", "Terminal", "Restart", "Power off" };
+static const char *tile_sub[N_TILES] = { "Lock the screen now", "Open foot", "Reboot flipos", "Shut down the VM" };
+
+static void tile_rect(int w, int i, int *x, int *y, int *tw, int *th) {
+	int m = 16, gap = 12;
+	*tw = (w - 2 * m - gap) / 2;
+	*th = 78;
+	*x = m + (i % 2) * (*tw + gap);
+	*y = BAR_H + 112 + (i / 2) * (*th + gap);
+}
+
+static void info_row(pixman_image_t *img, int x, int w, int y, const char *k, const char *v) {
+	draw_text(img, font_small, k, x, y, C_DIM);
+	draw_text(img, font_small, v, x + w - text_width(font_small, v), y, C_FG);
+}
+
+static void draw_shade(pixman_image_t *img, int w, int h) {
+	fill(img, C_BG, 0, BAR_H, w, h - BAR_H);
+	char big[16], date[64];
+	clock_str(big, sizeof(big), "%H:%M");
+	clock_str(date, sizeof(date), "%A %d %B");
+	draw_text(img, font_icon, big, 20, BAR_H + 52, C_FG);
+	draw_text(img, font_small, date, 22, BAR_H + 78, C_DIM);
+
+	for (int i = 0; i < N_TILES; i++) {
+		int x, y, tw, th;
+		tile_rect(w, i, &x, &y, &tw, &th);
+		bool armed = shade_armed == i;
+		uint32_t bg = armed ? C_RED : i == T_LOCK ? C_ACCENT : C_CARD;
+		uint32_t fg = armed || i == T_LOCK ? C_BG : C_FG;
+		rrect(img, bg, x, y, tw, th, 20);
+		draw_text(img, font, tile_title[i], x + 18, y + 34, fg);
+		draw_text(img, font_small, armed ? "Tap again to confirm" : tile_sub[i],
+			x + 18, y + 56, armed ? C_BG : (i == T_LOCK ? C_BG : C_DIM));
+	}
+
+	/* live system card */
+	int cx = 16, cw = w - 32, cy = BAR_H + 112 + 2 * (78 + 12) + 4, rowh = 30;
+	rrect(img, C_CARD, cx, cy, cw, 24 + 6 * rowh, 20);
+	int x = cx + 18, iw = cw - 36, y = cy + 34;
+	char v[96], line[128];
+
+	draw_text(img, font, "System", x, y, C_ACCENT);
+	y += rowh;
+	if (!ipv4_addr(v, sizeof(v))) snprintf(v, sizeof(v), "offline");
+	info_row(img, x, iw, y, "Network", v);
+	y += rowh;
+
+	long total = 0, avail = 0;
+	FILE *f = fopen("/proc/meminfo", "r");
+	if (f) {
+		while (fgets(line, sizeof(line), f)) {
+			sscanf(line, "MemTotal: %ld kB", &total);
+			sscanf(line, "MemAvailable: %ld kB", &avail);
+		}
+		fclose(f);
+	}
+	snprintf(v, sizeof(v), "%ld / %ld MB", (total - avail) / 1024, total / 1024);
+	info_row(img, x, iw, y, "Memory", v);
+	y += rowh;
+
+	struct statvfs sv;
+	if (statvfs("/data", &sv) == 0) {
+		double tot = (double)sv.f_blocks * sv.f_frsize, fr = (double)sv.f_bavail * sv.f_frsize;
+		snprintf(v, sizeof(v), "%.1f / %.1f GB", (tot - fr) / 1e9, tot / 1e9);
+	} else {
+		snprintf(v, sizeof(v), "not mounted");
+	}
+	info_row(img, x, iw, y, "Storage (/data)", v);
+	y += rowh;
+
+	double up = 0;
+	if (read_line("/proc/uptime", line, sizeof(line))) up = atof(line);
+	long mins = (long)up / 60;
+	snprintf(v, sizeof(v), "%ldh %02ldm", mins / 60, mins % 60);
+	info_row(img, x, iw, y, "Uptime", v);
+	y += rowh;
+
+	double load = 0;
+	if (read_line("/proc/loadavg", line, sizeof(line))) load = atof(line);
+	snprintf(v, sizeof(v), "%ld cores, load %.2f", sysconf(_SC_NPROCESSORS_ONLN), load);
+	info_row(img, x, iw, y, "CPU", v);
+
+	/* close handle */
+	rrect(img, C_DIM, (w - 44) / 2, h - 18, 44, 5, 2);
+}
+
+static void draw_bar(pixman_image_t *img, int w, int h) {
+	fill(img, C_BAR, 0, 0, w, BAR_H);
+	int base = (BAR_H + font->ascent - font->descent) / 2;
+	char clock[16];
+	clock_str(clock, sizeof(clock), "%H:%M");
+	draw_text(img, font, clock, 18, base, C_FG);
+
+	int cy = BAR_H / 2, x = w - 18;
+	bool charging;
+	int pct = battery_pct(&charging);
+	if (pct >= 0) {
+		char t[16];
+		snprintf(t, sizeof(t), "%d%%", pct);
+		x -= text_width(font_small, t) + 4 + 24;
+		draw_batt_icon(img, x, cy, pct, charging);
+		x -= 12;
+	}
+	x -= 18;
+	draw_net_icon(img, x, cy, network_up());
+
+	if (shade_open) {
+		draw_shade(img, w, h);
+	}
 }
 
 static void draw_home(pixman_image_t *img, uint32_t *px, int w, int h) {
@@ -677,10 +872,13 @@ static const struct ext_session_lock_surface_v1_listener lock_surface_listener =
 	.configure = lock_surface_configure,
 };
 
+static void shade_set(bool open);
+
 static void lock_start(void) {
 	if (session_lock || !lock_mgr || !output) {
 		return;
 	}
+	shade_set(false);
 	wipe_pins();
 	lock_msg[0] = '\0';
 	lmode = pin_exists() ? LM_ENTER : LM_SET;
@@ -761,6 +959,51 @@ static void make_surface(struct surf *s) {
 	wl_surface_commit(s->surface);   /* initial commit: ask for a configure */
 }
 
+static void shade_set(bool open) {
+	if (open == shade_open || !bar.layer) {
+		return;
+	}
+	if (open && output_h <= BAR_H + GESTURE_H) {
+		return;                 /* output size not known yet */
+	}
+	shade_open = open;
+	shade_armed = -1;
+	/* Same anchors and exclusive zone; only the height changes, so apps under
+	 * the panel are not re-laid out. */
+	zwlr_layer_surface_v1_set_size(bar.layer, 0, open ? output_h - GESTURE_H : BAR_H);
+	wl_surface_commit(bar.surface);      /* the compositor answers with a configure */
+}
+
+static void shade_tap(double x, double y) {
+	for (int i = 0; i < N_TILES; i++) {
+		int tx, ty, tw, th;
+		tile_rect(bar.w, i, &tx, &ty, &tw, &th);
+		if (x < tx || x >= tx + tw || y < ty || y >= ty + th) {
+			continue;
+		}
+		if ((i == T_REBOOT || i == T_POWEROFF) && shade_armed != i) {
+			shade_armed = i;           /* destructive: needs a second tap */
+			render(&bar);
+			return;
+		}
+		shade_set(false);
+		if (i == T_LOCK) {
+			lock_start();
+		} else if (i == T_TERM) {
+			struct app a = { .entry = "foot" };
+			launch(&a);
+		} else if (i == T_REBOOT) {
+			struct app a = { .entry = "sync; reboot" };
+			launch(&a);
+		} else {
+			struct app a = { .entry = "sync; poweroff" };
+			launch(&a);
+		}
+		return;
+	}
+	shade_set(false);                    /* tap outside the tiles closes it */
+}
+
 /* ---------- pointer (the virtio tablet acts as touch) ---------- */
 
 static void p_enter(void *d, struct wl_pointer *p, uint32_t serial, struct wl_surface *s,
@@ -784,9 +1027,26 @@ static void p_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t x, wl
 
 static void p_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t t,
 		uint32_t button, uint32_t state) {
-	if (state != WL_POINTER_BUTTON_STATE_RELEASED) {
+	if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+		press_surface = pointer_surface;
+		press_y = pointer_y;
 		return;
 	}
+	if (bar.surface && press_surface == bar.surface) {
+		double dy = pointer_y - press_y;
+		press_surface = NULL;
+		if (!shade_open) {
+			if (dy > SWIPE || (dy > -12 && dy < 12)) {
+				shade_set(true);           /* swipe down or tap */
+			}
+		} else if (dy < -SWIPE) {
+			shade_set(false);              /* swipe up */
+		} else if (dy > -12 && dy < 12) {
+			shade_tap(pointer_x, pointer_y);
+		}
+		return;
+	}
+	press_surface = NULL;
 	if (lock.surface && pointer_surface == lock.surface) {
 		for (int i = 0; i < 12; i++) {
 			int x, y, kw, kh;
@@ -885,6 +1145,18 @@ static const struct wl_seat_listener seat_listener = {
 	.capabilities = seat_caps, .name = seat_name,
 };
 
+static void out_geometry(void *d, struct wl_output *o, int32_t x, int32_t y, int32_t pw,
+		int32_t ph, int32_t sub, const char *make, const char *model, int32_t tr) {}
+static void out_mode(void *d, struct wl_output *o, uint32_t flags, int32_t w, int32_t h,
+		int32_t refresh) {
+	if (flags & WL_OUTPUT_MODE_CURRENT) {
+		output_h = h;
+	}
+}
+static const struct wl_output_listener output_listener = {
+	.geometry = out_geometry, .mode = out_mode,
+};
+
 /* ---------- registry ---------- */
 
 static void reg_global(void *d, struct wl_registry *r, uint32_t name,
@@ -902,6 +1174,7 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name,
 		lock_mgr = wl_registry_bind(r, name, &ext_session_lock_manager_v1_interface, 1);
 	} else if (strcmp(iface, wl_output_interface.name) == 0 && !output) {
 		output = wl_registry_bind(r, name, &wl_output_interface, 1);
+		wl_output_add_listener(output, &output_listener, NULL);
 	}
 }
 
@@ -960,7 +1233,7 @@ int main(void) {
 		time_t now = time(NULL);
 		struct tm tm;
 		localtime_r(&now, &tm);
-		int timeout_ms = (60 - tm.tm_sec) * 1000;
+		int timeout_ms = shade_open ? 2000 : (60 - tm.tm_sec) * 1000;   /* live stats */
 
 		while (wl_display_prepare_read(display) != 0) {
 			wl_display_dispatch_pending(display);

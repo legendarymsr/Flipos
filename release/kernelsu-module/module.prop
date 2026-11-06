@@ -1,6 +1,6 @@
 id=flipos
 name=flipos (QEMU mobile OS)
-version=v0.3.0
-versionCode=3
+version=v0.3.1
+versionCode=4
 author=legendarymsr
 description=Runs the flipos mobile OS in a bundled QEMU directly on Android (KVM, TCG fallback). View it in your browser (noVNC) or any VNC app. Action button starts/stops it. Systemless: no overlay, nothing runs at boot, never writes a partition.

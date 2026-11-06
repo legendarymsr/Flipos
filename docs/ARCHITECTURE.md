@@ -161,10 +161,11 @@ this maps to verified boot. Optional fscrypt on `/data/data/*` keyed from the PI
 | s6 service tree | [spec] |
 | flipos-wm compositor | **[scaffold]** — `src/compositor/flipos-wm.c` (wlroots 0.19, fullscreen-per-app, spawns a terminal); builds via the `flipos-wm` Buildroot package |
 | Terminal (foot) | **[scaffold]** — bundled via Buildroot `foot`, launched by the compositor |
-| Status bar + home screen (`flipos-shell`) | **[done]** — boot-tested under QEMU: icons launch apps, gesture bar goes home |
+| Status bar + home screen (`flipos-shell`) | **[done]** — boot-tested under QEMU: icons launch apps, gesture bar goes home; bar shows clock, drawn network icon and a battery icon only when the kernel reports a battery |
+| Quick-settings panel (pull down the bar) | **[done]** — boot-tested: opens over apps without re-laying them out; Lock / Terminal / Restart / Power off (destructive tiles need a second tap); live IP, memory, /data storage, uptime, CPU load |
 | Lock screen (`ext-session-lock-v1`, Argon2id PIN in `/data/system/lock.pin`, persistent backoff) | **[done]** — boot-tested: boots locked, set/confirm PIN, wrong PIN rejected, Alt+L / Power locks, input blocked while locked, shell crash keeps the screen locked and the respawned shell re-shows the keypad |
 | Swipe gestures (bottom swipe-up/tap → home, left/right edge swipe → back) | **[done]** — boot-tested: swipe-up returns home, edge swipe closes the focused app |
-| App drawer, notification shade, recents | [spec] |
+| App drawer, notifications, recents | [spec] |
 | pacman app manager (packaging + repo) | **[scaffold]** — pacman/gpgme Buildroot packages + /etc/pacman.conf + flipos-pkg; example PKGBUILD in `repo/` |
 | flipos-launch / permd | [spec] |
 | flipd / notifyd | [spec] |

@@ -53,6 +53,7 @@ struct flipos_server {
 	struct wlr_allocator *allocator;
 	struct wlr_scene *scene;
 	struct wlr_scene_output_layout *scene_layout;
+	double focus_ox, focus_oy;   /* layout origin of the pointer-focused surface */
 
 	struct wlr_xdg_shell *xdg_shell;
 	struct wl_listener new_xdg_toplevel;
@@ -829,9 +830,19 @@ static void process_cursor_motion(struct flipos_server *server, uint32_t time) {
 		return;
 	}
 
+	struct wlr_seat *seat = server->seat;
+	/* Implicit grab: while a button (finger) is down, keep sending motion to
+	 * the surface the press started on, as Wayland clients expect. Without it a
+	 * swipe that starts on the status bar ends on the app below and the bar
+	 * never sees the release. */
+	if (seat->pointer_state.button_count > 0 && seat->pointer_state.focused_surface) {
+		wlr_seat_pointer_notify_motion(seat, time,
+			server->cursor->x - server->focus_ox, server->cursor->y - server->focus_oy);
+		return;
+	}
+
 	/* Otherwise, find the toplevel under the pointer and send the event along. */
 	double sx, sy;
-	struct wlr_seat *seat = server->seat;
 	struct wlr_surface *surface = NULL;
 	struct flipos_toplevel *toplevel = desktop_toplevel_at(server,
 			server->cursor->x, server->cursor->y, &surface, &sx, &sy);
@@ -855,6 +866,8 @@ static void process_cursor_motion(struct flipos_server *server, uint32_t time) {
 		 */
 		wlr_seat_pointer_notify_enter(seat, surface, sx, sy);
 		wlr_seat_pointer_notify_motion(seat, time, sx, sy);
+		server->focus_ox = server->cursor->x - sx;   /* surface origin, for grabs */
+		server->focus_oy = server->cursor->y - sy;
 	} else {
 		/* Clear pointer focus so future button events and such are not sent to
 		 * the last client to have the cursor over it. */
