@@ -7,10 +7,12 @@ mkdir -p "$T/data"                     # mountpoint for the ext4 data image (vdb
 # the terminal. libseat runs its built-in (in-process) seat backend — Buildroot's
 # seatd ships no daemon — so no seatd process is needed. The serial getty stays.
 # Regenerate our block every build (TARGET_DIR persists across rebuilds).
-sed -i '/# flipos:/d; /\/usr\/bin\/seatd/d; /\/usr\/bin\/flipos-session/d' "$T/etc/inittab"
+sed -i '/# flipos:/d; /\/usr\/bin\/seatd/d; /\/usr\/bin\/flipos-session/d; /\/usr\/bin\/flipos-hostd/d' "$T/etc/inittab"
 cat >> "$T/etc/inittab" <<'TAB'
 # flipos: Wayland session (flipos-wm, which starts foot)
 ::respawn:/usr/bin/flipos-session
+# flipos: phone status (battery) from the Android host over virtio-serial
+::respawn:/usr/bin/flipos-hostd
 TAB
 
 # Android host bundle: move QEMU (built here for aarch64/glibc) out of the guest

@@ -1,0 +1,26 @@
+#!/bin/sh
+# flipos-hostd: receive host (phone) status over the virtio-serial port
+# "org.flipos.host" and publish it for the shell in /run/flipos/.
+# Protocol, one line per message, host -> guest only:
+#   battery <percent 0-100> <Charging|Discharging|Full|Not charging|Unknown>
+# Input is validated; anything else is ignored. Respawned by init.
+OUT=/run/flipos
+mkdir -p "$OUT"
+port=""
+for d in /sys/class/virtio-ports/vport*; do
+  [ "$(cat "$d/name" 2>/dev/null)" = "org.flipos.host" ] && port="/dev/${d##*/}"
+done
+if [ -z "$port" ]; then
+  # Not started by the flipos controller (e.g. plain `make run`): nothing to do.
+  exec sleep 2147483647
+fi
+set -f                      # from here on: no glob expansion of received text
+while IFS= read -r line; do
+  set -- $line
+  [ "$1" = battery ] || continue
+  pct="$2"; shift 2; st="$*"
+  case "$pct" in ''|*[!0-9]*) continue ;; esac
+  [ "$pct" -le 100 ] || continue
+  case "$st" in Charging|Discharging|Full|"Not charging"|Unknown) ;; *) st=Unknown ;; esac
+  printf '%s %s\n' "$pct" "$st" > "$OUT/battery.tmp" && mv "$OUT/battery.tmp" "$OUT/battery"
+done < "$port"

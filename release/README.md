@@ -21,7 +21,7 @@ kernel through the bundled loader
 no Termux and no Debian are involved.
 
 ## Install
-1. KernelSU manager → **Modules → Install from storage** → `flipos-v0.3.1.zip`.
+1. KernelSU manager → **Modules → Install from storage** → `flipos-v0.3.2.zip`.
    The installer copies the files, self-tests the bundled QEMU on your phone and
    reports whether `/dev/kvm` is present. Your existing `data.img` is kept on upgrade.
 2. No reboot is needed to use it (nothing runs at boot anyway).
@@ -49,6 +49,14 @@ the left/right edge = back.
 `flipos status` shows which one is running. Overrides: `ACCEL=tcg`,
 `KVM_CPUS=""` (no pin) or another range, `SMP`, `MEM_MB` (default 2048), `RES`
 (default `540x1320`), `DATA_SIZE` (first boot only).
+
+### Phone battery in flipos
+While flipos runs, the controller reads your phone's battery from Android's
+`/sys/class/power_supply` (read-only) and sends `battery <percent> <status>` to
+the VM over a one-way virtio-serial port (`org.flipos.host`). Inside flipos,
+`flipos-hostd` validates each line and the status bar draws it, with a green fill
+while charging; the quick-settings System card shows it too. Values older than
+3 minutes are dropped, so a stopped sender never leaves a stale number.
 
 ## Safety (what it will and won't do)
 - Files live under `/data/adb/modules/flipos/` and `/data/flipos/` only.

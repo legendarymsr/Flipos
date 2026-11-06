@@ -42,8 +42,11 @@ cpumask() {
 
 start_vm() {   # $1 = accel name, rest = accel args (optionally prefixed by taskset)
   name="$1"; shift
-  rm -f "$RUN/qemu.pid"
+  rm -f "$RUN/qemu.pid" "$RUN/hostinfo.in" "$RUN/hostinfo.out"
   : > "$RUN/serial.log"
+  # host -> guest status channel (battery): a FIFO pair QEMU exposes to the
+  # guest as the virtio-serial port "org.flipos.host"
+  mkfifo -m 600 "$RUN/hostinfo.in" "$RUN/hostinfo.out" || return 1
   "$@" \
     -L "$H/share/qemu" -smp "$SMP" -m "$MEM_MB" \
     -kernel "$IMG/Image" \
@@ -54,6 +57,8 @@ start_vm() {   # $1 = accel name, rest = accel args (optionally prefixed by task
     -device virtio-tablet-pci -device virtio-keyboard-pci -device virtio-rng-pci -device virtio-balloon-pci \
     -netdev user,id=n0 -device virtio-net-pci,netdev=n0,romfile= \
     -display none -vnc "127.0.0.1:$VNC_DISPLAY,websocket=127.0.0.1:$WS_PORT" \
+    -device virtio-serial-pci -chardev pipe,id=hostinfo,path="$RUN/hostinfo" \
+    -device virtserialport,chardev=hostinfo,name=org.flipos.host \
     -serial "file:$RUN/serial.log" -monitor none \
     -pidfile "$RUN/qemu.pid" -daemonize 2> "$RUN/qemu.err" || return 1
   # a KVM vCPU that can't run on this core type dies right after startup
@@ -99,6 +104,10 @@ cmd_start() {
   # Ask Android's low-memory killer to spare the VM (runtime-only, per process).
   echo -800 > "/proc/$(cat "$RUN/qemu.pid")/oom_score_adj" 2>/dev/null
 
+  if ! alive "$RUN/battery.pid"; then
+    setsid sh "$0" _battery > /dev/null 2>&1 &
+    echo $! > "$RUN/battery.pid"
+  fi
   if ! alive "$RUN/httpd.pid"; then
     setsid "$LD" --library-path "$H/lib" "$H/bin/busybox" httpd -f \
       -p "127.0.0.1:$HTTP_PORT" -h "$F/novnc" > /dev/null 2>&1 &
@@ -110,7 +119,7 @@ cmd_start() {
 }
 
 cmd_stop() {
-  for p in qemu httpd; do
+  for p in qemu httpd battery; do
     if alive "$RUN/$p.pid"; then kill "$(cat "$RUN/$p.pid")" 2>/dev/null; say "stopped $p"; fi
     rm -f "$RUN/$p.pid"
   done
@@ -121,10 +130,38 @@ cmd_status() {
   if alive "$RUN/qemu.pid"; then say "VM running, $(cat "$RUN/accel"), pid $(cat "$RUN/qemu.pid")"
   else say "VM stopped"; fi
   if alive "$RUN/httpd.pid"; then say "web viewer on 127.0.0.1:$HTTP_PORT"; else say "web viewer stopped"; fi
+  B="$(android_battery_dir)"
+  if [ -n "$B" ]; then say "phone battery $(cat "$B/capacity")% ($(cat "$B/status")), shown in flipos"
+  else say "no phone battery found in /sys/class/power_supply"; fi
   [ -c /dev/kvm ] && say "/dev/kvm present" || say "/dev/kvm absent (TCG only)"
 }
 
 cmd_url() { say "open in your browser: $URL"; }
+
+# The phone's battery (Android sysfs, read-only) -> the guest's status bar.
+# Sends on change and at least once a minute (the guest drops values older than
+# 3 minutes). Runs only while the VM does.
+android_battery_dir() {
+  [ -r /sys/class/power_supply/battery/capacity ] && { echo /sys/class/power_supply/battery; return; }
+  for d in /sys/class/power_supply/*; do
+    [ "$(cat "$d/type" 2>/dev/null)" = Battery ] && [ -r "$d/capacity" ] && { echo "$d"; return; }
+  done
+}
+cmd_battery() {
+  B="$(android_battery_dir)"
+  [ -n "$B" ] || exit 0                      # no battery: the guest shows none
+  # O_RDWR open never blocks, even before/after QEMU holds the FIFO.
+  exec 3<> "$RUN/hostinfo.in" || exit 1
+  last=""; n=0
+  while alive "$RUN/qemu.pid"; do
+    cap="$(cat "$B/capacity" 2>/dev/null)"; st="$(cat "$B/status" 2>/dev/null)"
+    line="battery ${cap:-0} ${st:-Unknown}"
+    if [ "$line" != "$last" ] || [ "$n" -ge 6 ]; then
+      echo "$line" >&3; last="$line"; n=0
+    fi
+    n=$((n + 1)); sleep 10
+  done
+}
 
 case "${1:-start}" in
   start) cmd_start ;;
@@ -133,5 +170,6 @@ case "${1:-start}" in
   status) cmd_status ;;
   url) cmd_url ;;
   log) tail -n "${2:-40}" "$RUN/serial.log" ;;
+  _battery) cmd_battery ;;
   *) echo "usage: flipos start|stop|restart|status|url|log"; exit 2 ;;
 esac

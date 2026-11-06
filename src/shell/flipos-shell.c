@@ -395,12 +395,27 @@ static bool network_up(void) {
 	return ipv4_addr(ip, sizeof(ip));
 }
 
-/* Battery percentage from the kernel, or -1 when there is no battery (QEMU has
- * none, so the icon is simply not drawn - no fake numbers). */
+/* Battery percentage, or -1 when there is none. Source, in order:
+ *   1. /run/flipos/battery - the PHONE's real battery, sent by the Android host
+ *      over virtio-serial (flipos-hostd); ignored if older than 3 minutes, so a
+ *      stopped sender never leaves a stale number on screen;
+ *   2. a battery the guest kernel itself reports (none under QEMU).
+ * With neither, no icon is drawn - never a fake number. */
 static int battery_pct(bool *charging) {
-	DIR *d = opendir("/sys/class/power_supply");
 	int pct = -1;
 	*charging = false;
+	struct stat st;
+	char hb[64];
+	if (stat("/run/flipos/battery", &st) == 0 && time(NULL) - st.st_mtime < 180 &&
+			read_line("/run/flipos/battery", hb, sizeof(hb))) {
+		char state[32] = "";
+		if (sscanf(hb, "%d %31[^\n]", &pct, state) >= 1 && pct >= 0 && pct <= 100) {
+			*charging = strncmp(state, "Charging", 8) == 0 || strncmp(state, "Full", 4) == 0;
+			return pct;
+		}
+		pct = -1;
+	}
+	DIR *d = opendir("/sys/class/power_supply");
 	if (!d) return -1;
 	struct dirent *e;
 	while ((e = readdir(d)) && pct < 0) {
@@ -500,7 +515,7 @@ static void draw_shade(pixman_image_t *img, int w, int h) {
 
 	/* live system card */
 	int cx = 16, cw = w - 32, cy = BAR_H + 112 + 2 * (78 + 12) + 4, rowh = 30;
-	rrect(img, C_CARD, cx, cy, cw, 24 + 6 * rowh, 20);
+	rrect(img, C_CARD, cx, cy, cw, 24 + 7 * rowh, 20);
 	int x = cx + 18, iw = cw - 36, y = cy + 34;
 	char v[96], line[128];
 
@@ -544,6 +559,13 @@ static void draw_shade(pixman_image_t *img, int w, int h) {
 	if (read_line("/proc/loadavg", line, sizeof(line))) load = atof(line);
 	snprintf(v, sizeof(v), "%ld cores, load %.2f", sysconf(_SC_NPROCESSORS_ONLN), load);
 	info_row(img, x, iw, y, "CPU", v);
+	y += rowh;
+
+	bool chg;
+	int bp = battery_pct(&chg);
+	if (bp >= 0) snprintf(v, sizeof(v), "%d%%%s", bp, chg ? ", charging" : "");
+	else snprintf(v, sizeof(v), "not reported");
+	info_row(img, x, iw, y, "Battery", v);
 
 	/* close handle */
 	rrect(img, C_DIM, (w - 44) / 2, h - 18, 44, 5, 2);
