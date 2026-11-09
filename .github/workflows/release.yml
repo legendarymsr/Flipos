@@ -1,0 +1,95 @@
+# Build flipos from source and publish the KernelSU zip as a GitHub release.
+#
+# Run it: GitHub -> Actions -> "release" -> Run workflow (or push a tag "v*").
+# The release tag is the version in release/kernelsu-module/module.prop
+# (e.g. v0.3.2); bump it there before releasing again.
+#
+# Everything is built from the pinned sources in this repo (Buildroot submodule,
+# hash-verified downloads, noVNC pinned by commit), exactly like `make image &&
+# make release` on a workstation. Takes ~1.5-3 h on a standard runner.
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write          # to create the release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Determine version
+        id: ver
+        run: |
+          v="$(sed -n 's/^version=//p' release/kernelsu-module/module.prop)"
+          echo "tag=$v" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = tag ] && [ "${GITHUB_REF_NAME}" != "$v" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match module.prop version $v"; exit 1
+          fi
+          if gh release view "$v" >/dev/null 2>&1; then
+            echo "::error::release $v already exists - bump version= in module.prop"; exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential file wget cpio unzip rsync bc \
+            python3 git zip perl binutils
+
+      - name: Use the large scratch disk for the build
+        run: |
+          sudo mkdir -p /mnt/flipos/out /mnt/flipos/dl /mnt/flipos/ccache
+          sudo chown -R "$USER" /mnt/flipos
+          ln -s /mnt/flipos/out out
+          ln -s /mnt/flipos/dl dl
+          ln -s /mnt/flipos/ccache ccache
+          df -h / /mnt
+
+      - name: Cache source downloads
+        uses: actions/cache@v4
+        with:
+          path: /mnt/flipos/dl
+          key: dl-${{ hashFiles('br2-external/configs/*', '.gitmodules') }}-${{ github.sha }}
+          restore-keys: dl-${{ hashFiles('br2-external/configs/*', '.gitmodules') }}-
+
+      - name: Build kernel + root filesystem + Android QEMU bundle
+        run: make image
+
+      - name: Package the KernelSU zip
+        run: make release
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          zip="out/flipos-$TAG.zip"
+          sum="$(sha256sum "$zip" | cut -d' ' -f1)"
+          {
+            echo "Flash with the KernelSU manager: **Modules → Install from storage**."
+            echo
+            echo "- Start/stop: the module's **Action** button (opens the viewer in your browser), its WebUI, or \`su -c sh /data/flipos/bin/flipos start\`."
+            echo "- KVM is used when \`/dev/kvm\` works, otherwise TCG. VNC at 127.0.0.1:5901."
+            echo "- Systemless: no overlay, nothing runs at boot, never writes a partition."
+            echo
+            echo "SHA-256: \`$sum\`"
+            echo
+            echo "Built from commit ${GITHUB_SHA} by this workflow. See release/README.md."
+          } > notes.md
+          gh release create "$TAG" "$zip" --target "$GITHUB_SHA" \
+            --title "flipos $TAG" --notes-file notes.md
