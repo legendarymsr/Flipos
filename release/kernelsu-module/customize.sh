@@ -5,12 +5,14 @@
 # overlay, no dd/mkfs/fastboot, no remount, and nothing starts at boot.
 SKIPMOUNT=true          # no system/ overlay: nothing is mounted over Android
 ASH_STANDALONE=1
+# NOTE: managers (KernelSU-Next, Magisk) do not keep the zip's exec bits when
+# extracting, so test files with -f and set modes explicitly below.
 
 F=/data/flipos
 P="$MODPATH/payload"
 
 # Upgrading while flipos runs? stop it first (its disk files are about to be replaced).
-[ -x "$F/bin/flipos" ] && sh "$F/bin/flipos" stop >/dev/null 2>&1
+[ -f "$F/bin/flipos" ] && sh "$F/bin/flipos" stop >/dev/null 2>&1
 
 ui_print "- flipos: installing to $F (systemless, /data only)"
 mkdir -p "$F/images" "$F/bin" "$F/run" "$F/tmp"
@@ -21,7 +23,7 @@ done
 cp -f "$P/images/Image" "$P/images/rootfs.erofs" "$F/images/"
 ui_print "- guest OS images installed (your data.img is kept)"
 
-[ -x "$P/host/lib/ld-linux-aarch64.so.1" ] || abort "! bundled QEMU missing from the zip"
+[ -f "$P/host/lib/ld-linux-aarch64.so.1" ] && [ -f "$P/host/bin/qemu-system-aarch64" ] || abort "! bundled QEMU missing from the zip"
 rm -rf "$F/host" "$F/novnc"
 cp -a "$P/host" "$F/host"
 cp -a "$P/novnc" "$F/novnc"
