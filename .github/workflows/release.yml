@@ -2,15 +2,28 @@
 #
 # Run it: GitHub -> Actions -> "release" -> Run workflow (or push a tag "v*").
 # The release tag is the version in release/kernelsu-module/module.prop
-# (e.g. v0.3.2); bump it there before releasing again.
+# (e.g. v0.3.4); bump it there before releasing again.
 #
-# Everything is built from the pinned sources in this repo (Buildroot submodule,
-# hash-verified downloads, noVNC pinned by commit), exactly like `make image &&
-# make release` on a workstation. Takes ~1.5-3 h on a standard runner.
+# Two paths:
+#  - FAST (~2-5 min): nothing that goes into the OS image changed since the
+#    previous release (br2-external/, src/, buildroot, Makefile, .gitmodules).
+#    The guest images and Android QEMU bundle are taken from the previous
+#    release's zip - built by this same workflow from the same pinned inputs -
+#    and only the module (scripts, noVNC, controller) is repackaged.
+#  - FULL: everything is built from the pinned sources, like `make image &&
+#    make release` on a workstation. ccache and the source downloads are cached
+#    between runs, so a rebuild after a code change is much faster than the
+#    first one (~3 h cold).
+# Tick "full_build" when running it to force the full path.
 name: release
 
 on:
   workflow_dispatch:
+    inputs:
+      full_build:
+        description: "Rebuild everything from source (ignore the fast path)"
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -21,6 +34,11 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+env:
+  GH_TOKEN: ${{ github.token }}
+  # files whose change means the OS image / QEMU bundle must be rebuilt
+  IMAGE_INPUTS: br2-external src buildroot Makefile .gitmodules
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -29,9 +47,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
-          fetch-depth: 1
+          fetch-depth: 0          # the fast-path check diffs against the last release
 
-      - name: Determine version
+      - name: Determine version and build path
         id: ver
         run: |
           v="$(sed -n 's/^version=//p' release/kernelsu-module/module.prop)"
@@ -42,14 +60,29 @@ jobs:
           if gh release view "$v" >/dev/null 2>&1; then
             echo "::error::release $v already exists - bump version= in module.prop"; exit 1
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
+
+          mode=full; prev=""
+          prev="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          if [ "${{ inputs.full_build }}" != "true" ] && [ -n "$prev" ]; then
+            prev_sha="$(git rev-list -n 1 "refs/tags/$prev" 2>/dev/null || true)"
+            if [ -n "$prev_sha" ] && git diff --quiet "$prev_sha" HEAD -- $IMAGE_INPUTS; then
+              mode=fast
+            fi
+            echo "previous release: $prev (${prev_sha:-unknown commit})"
+          fi
+          echo "build path: $mode"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
 
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential file wget cpio unzip rsync bc \
-            python3 git zip perl binutils
+          if [ "${{ steps.ver.outputs.mode }}" = fast ]; then
+            sudo apt-get install -y -qq zip unzip
+          else
+            sudo apt-get install -y -qq build-essential file wget cpio unzip rsync bc \
+              python3 git zip perl binutils
+          fi
 
       - name: Use the large scratch disk for the build
         run: |
@@ -58,28 +91,65 @@ jobs:
           ln -s /mnt/flipos/out out
           ln -s /mnt/flipos/dl dl
           ln -s /mnt/flipos/ccache ccache
-          df -h / /mnt
 
+      # ---------------- fast path ----------------
+      - name: "Fast path: reuse the previous release's images"
+        if: steps.ver.outputs.mode == 'fast'
+        env:
+          PREV: ${{ steps.ver.outputs.prev }}
+        run: |
+          mkdir -p prev out/images
+          asset="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$PREV" \
+            --jq '[.assets[] | select(.name | test("^flipos-.*[.]zip$"))][0].url')"
+          gh api -H "Accept: application/octet-stream" "$asset" > "prev/flipos-$PREV.zip"
+          unzip -q prev/flipos-*.zip 'payload/images/*' 'payload/host/*' -d prev/x
+          cp prev/x/payload/images/Image prev/x/payload/images/rootfs.erofs out/images/
+          cp -a prev/x/payload/host out/images/android-host
+          rm -f out/images/android-host/QEMU_VERSION   # mkrelease writes it again
+          # Managers and unzip keep modes, but be explicit: these must be executable.
+          chmod 0755 out/images/android-host/bin/* out/images/android-host/lib/ld-linux-aarch64.so.1
+          echo "reused images from $PREV (no image inputs changed: $IMAGE_INPUTS)"
+
+      # ---------------- full path ----------------
       - name: Cache source downloads
+        if: steps.ver.outputs.mode == 'full'
         uses: actions/cache@v4
         with:
           path: /mnt/flipos/dl
           key: dl-${{ hashFiles('br2-external/configs/*', '.gitmodules') }}-${{ github.sha }}
           restore-keys: dl-${{ hashFiles('br2-external/configs/*', '.gitmodules') }}-
 
+      - name: Cache compiler output (ccache)
+        if: steps.ver.outputs.mode == 'full'
+        uses: actions/cache@v4
+        with:
+          path: /mnt/flipos/ccache
+          key: ccache-${{ hashFiles('.gitmodules') }}-${{ github.sha }}
+          restore-keys: ccache-${{ hashFiles('.gitmodules') }}-
+
       - name: Build kernel + root filesystem + Android QEMU bundle
+        if: steps.ver.outputs.mode == 'full'
+        env:
+          CCACHE_MAXSIZE: 3G
         run: make image
 
+      # ---------------- both ----------------
       - name: Package the KernelSU zip
         run: make release
 
       - name: Publish release
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ver.outputs.tag }}
+          MODE: ${{ steps.ver.outputs.mode }}
+          PREV: ${{ steps.ver.outputs.prev }}
         run: |
           zip="out/flipos-$TAG.zip"
           sum="$(sha256sum "$zip" | cut -d' ' -f1)"
+          if [ "$MODE" = fast ]; then
+            how="Guest images and QEMU bundle reused from $PREV (their inputs are unchanged); module repackaged from commit ${GITHUB_SHA}."
+          else
+            how="Built from source at commit ${GITHUB_SHA}."
+          fi
           {
             echo "Flash with the KernelSU manager: **Modules → Install from storage**."
             echo
@@ -89,7 +159,7 @@ jobs:
             echo
             echo "SHA-256: \`$sum\`"
             echo
-            echo "Built from commit ${GITHUB_SHA} by this workflow. See release/README.md."
+            echo "$how See release/README.md."
           } > notes.md
           gh release create "$TAG" "$zip" --target "$GITHUB_SHA" \
             --title "flipos $TAG" --notes-file notes.md
