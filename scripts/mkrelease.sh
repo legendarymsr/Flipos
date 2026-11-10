@@ -40,6 +40,14 @@ mkdir -p "$STAGE/payload/novnc"
 ( cd "$NOVNC" && cp -a app core vendor vnc.html vnc_lite.html defaults.json mandatory.json package.json \
     LICENSE.txt AUTHORS "$STAGE/payload/novnc/" )
 cp "$STAGE/payload/novnc/vnc.html" "$STAGE/payload/novnc/index.html"   # "/" works too
+# flipos patch: don't request QEMU's LED-state events. With them, noVNC "syncs"
+# Caps Lock to the local keyboard - and Android soft keyboards report Caps Lock
+# wrongly, so noVNC switched it on in the guest and everything typed in CAPS.
+# Without them QEMU's own lock-key-sync handles case correctly.
+sed -i 's|^\( *\)encs.push(encodings.pseudoEncodingQEMULedEvent);|\1// flipos: LED-state sync disabled (see scripts/mkrelease.sh)|' \
+  "$STAGE/payload/novnc/core/rfb.js"
+grep -q 'flipos: LED-state sync disabled' "$STAGE/payload/novnc/core/rfb.js" \
+  || { echo "noVNC caps-lock patch did not apply"; exit 1; }
 
 mkdir -p "$ROOT/out"
 OUT="$ROOT/out/flipos-$VER.zip"; rm -f "$OUT"

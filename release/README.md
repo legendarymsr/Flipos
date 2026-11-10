@@ -21,7 +21,7 @@ kernel through the bundled loader
 no Termux and no Debian are involved.
 
 ## Install
-1. KernelSU manager → **Modules → Install from storage** → `flipos-v0.3.3.zip`.
+1. KernelSU manager → **Modules → Install from storage** → `flipos-v0.3.4.zip`.
    The installer copies the files, self-tests the bundled QEMU on your phone and
    reports whether `/dev/kvm` is present. Your existing `data.img` is kept on upgrade.
 2. No reboot is needed to use it (nothing runs at boot anyway).
