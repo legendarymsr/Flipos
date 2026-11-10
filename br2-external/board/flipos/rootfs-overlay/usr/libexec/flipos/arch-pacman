@@ -1,0 +1,10 @@
+#!/bin/sh
+# `pacman` in flipos = Arch Linux ARM's pacman, managing /data/arch.
+# First use sets up the Arch environment (see /usr/libexec/flipos/arch-env).
+# flipos' own signed app repo is handled by flipos-pkg.
+. /usr/libexec/flipos/arch-env
+arch_need_root
+arch_ready || arch_bootstrap || { echo "flipos: Arch setup failed (see above)" >&2; exit 1; }
+arch_mounts
+arch_resolv
+arch_exec /usr/bin/pacman "$@"

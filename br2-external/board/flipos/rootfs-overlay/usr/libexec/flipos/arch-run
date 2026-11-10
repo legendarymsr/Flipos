@@ -1,0 +1,9 @@
+#!/bin/sh
+# arch-run '<command line>' - run a program from /data/arch (used for the Arch
+# apps on the home screen). The whole command line is one argument.
+. /usr/libexec/flipos/arch-env
+arch_need_root
+arch_ready || { echo "flipos: no Arch environment yet - run: pacman -Syu" >&2; exit 1; }
+arch_mounts
+arch_resolv
+arch_exec /bin/sh -c "$*"

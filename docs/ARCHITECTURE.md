@@ -166,6 +166,7 @@ this maps to verified boot. Optional fscrypt on `/data/data/*` keyed from the PI
 | Lock screen (`ext-session-lock-v1`, Argon2id PIN in `/data/system/lock.pin`, persistent backoff) | **[done]** — boot-tested: boots locked, set/confirm PIN, wrong PIN rejected, Alt+L / Power locks, input blocked while locked, shell crash keeps the screen locked and the respawned shell re-shows the keypad |
 | Swipe gestures (bottom swipe-up/tap → home, left/right edge swipe → back) | **[done]** — boot-tested: swipe-up returns home, edge swipe closes the focused app |
 | App drawer, notifications, recents | [spec] |
+| `pacman` = Arch Linux ARM in `/data/arch` (keyring pinned in the image, first-run bootstrap, apps on the home screen via `.desktop`) | **[done]** |
 | pacman app manager (packaging + repo) | **[scaffold]** — pacman/gpgme Buildroot packages + /etc/pacman.conf + flipos-pkg; example PKGBUILD in `repo/` |
 | flipos-launch / permd | [spec] |
 | flipd / notifyd | [spec] |

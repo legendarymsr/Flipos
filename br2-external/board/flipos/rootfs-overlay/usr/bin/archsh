@@ -1,0 +1,8 @@
+#!/bin/sh
+# archsh - open a shell inside the Arch Linux ARM environment (/data/arch).
+. /usr/libexec/flipos/arch-env
+arch_need_root
+arch_ready || arch_bootstrap || exit 1
+arch_mounts
+arch_resolv
+arch_exec /bin/bash -l

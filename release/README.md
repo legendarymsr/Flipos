@@ -21,7 +21,7 @@ kernel through the bundled loader
 no Termux and no Debian are involved.
 
 ## Install
-1. KernelSU manager → **Modules → Install from storage** → `flipos-v0.3.4.zip`.
+1. KernelSU manager → **Modules → Install from storage** → `flipos-v0.4.0.zip`.
    The installer copies the files, self-tests the bundled QEMU on your phone and
    reports whether `/dev/kvm` is present. Your existing `data.img` is kept on upgrade.
 2. No reboot is needed to use it (nothing runs at boot anyway).
@@ -38,6 +38,20 @@ First boot: the guest formats its 4 GB sparse `data.img` and asks you to **set a
 PIN** (4–8 digits). Gestures: swipe up from the bottom bar = home; swipe in from
 the left/right edge = back.
 
+### Installing software: `pacman`
+In the flipos Terminal you are root. `pacman` is **Arch Linux ARM's pacman**:
+```sh
+pacman -Syu              # first run: sets up Arch Linux ARM in /data/arch (~150 MB)
+pacman -S htop           # install anything from Arch Linux ARM (aarch64)
+archsh                   # open a shell inside the Arch environment
+```
+GUI apps you install (anything with a `.desktop` entry) appear on the flipos home
+screen and run as Wayland apps. They are slow under TCG, and some programs refuse
+to run as root. flipos' own signed app repo is separate: `flipos-pkg`.
+
+The data disk is 4 GB by default (`DATA_SIZE`, first boot only), so large apps
+fill it quickly.
+
 ### Acceleration
 `flipos start` tries, in order:
 1. **KVM pinned to one CPU cluster** (`KVM_CPUS=4-6`, the Z Flip 4's three
@@ -50,7 +64,7 @@ the left/right edge = back.
 `KVM_CPUS=""` (no pin) or another range, `SMP`, `MEM_MB` (default 2048), `RES`
 (default `540x1320`), `DATA_SIZE` (first boot only).
 
-### Phone battery in flipos
+### Phone status in flipos (battery, DNS)
 While flipos runs, the controller reads your phone's battery from Android's
 `/sys/class/power_supply` (read-only) and sends `battery <percent> <status>` to
 the VM over a one-way virtio-serial port (`org.flipos.host`). Inside flipos,
@@ -72,11 +86,14 @@ while charging; the quick-settings System card shows it too. Values older than
   `data.img`**. Back it up first if you want to keep it.
 
 ## Known limits (honest)
-- **Untested on the real phone.** The bundle was boot-tested only inside an
-  aarch64 VM, not on Android/Exynos/Snapdragon hardware with KVM.
-- **Guest DNS:** QEMU's user networking reads the host's `/etc/resolv.conf`,
-  which Android does not have, so name lookups inside flipos may fail. IP
-  connectivity still works.
+- **No KVM on the Galaxy Z Flip 4**: Samsung's bootloader starts Android at EL1,
+  so `/dev/kvm` never appears even with `CONFIG_KVM=y`; flipos runs on TCG there.
+- **Guest DNS:** QEMU's own DNS forwarder can't work on Android (it reads the
+  host's `/etc/resolv.conf`, which Android lacks). The controller sends the
+  phone's DNS servers (from `dumpsys connectivity`, else `getprop net.dns1`) to
+  the VM instead; set `DNS="1.1.1.1"` to override. IPv4 only.
+- **Arch apps are not sandboxed** - they run as root in a chroot, which is not a
+  security boundary. Install what you'd trust as root on a Linux box.
 - When the phone's screen is off, Android may suspend the CPU, which pauses the VM.
 
 ## Build the zip

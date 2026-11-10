@@ -1,0 +1,12 @@
+#!/bin/sh
+# Put the phone's DNS servers (sent by the Android host, /run/flipos/dns) first
+# in /etc/resolv.conf. QEMU's own DNS forwarder (10.0.2.3) can't work on
+# Android - it reads the host's /etc/resolv.conf, which Android doesn't have -
+# so without this, name lookups fail. Called by flipos-hostd and after every
+# DHCP lease (udhcpc hook), which would otherwise overwrite resolv.conf.
+R=/etc/resolv.conf
+[ -s /run/flipos/dns ] || exit 0
+tmp=$(mktemp) || exit 1
+for s in $(cat /run/flipos/dns); do echo "nameserver $s # flipos-host"; done > "$tmp"
+grep -v '# flipos-host$' "$R" 2>/dev/null >> "$tmp"
+cat "$tmp" > "$R"; rm -f "$tmp"

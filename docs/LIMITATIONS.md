@@ -21,6 +21,12 @@
 - Everything past the build-system spine: kernel build, compositor, shell,
   services, apps, sandbox. This file is updated as each lands.
 
+## Arch Linux ARM programs are not sandboxed
+`pacman` installs real Arch Linux ARM packages into `/data/arch`; they run as root
+in a chroot (`arch-run`), which is not a security boundary. GUI apps are slow under
+TCG, use software rendering, and some (e.g. Chromium-based) refuse to run as root
+without flags.
+
 ## Apps are not sandboxed yet
 The home screen launches an app's manifest `entry` directly, as the session
 user (**root**). The `flipos-launch` sandbox (per-app UID, namespaces, Landlock,

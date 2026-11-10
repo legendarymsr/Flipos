@@ -15,6 +15,16 @@ cat >> "$T/etc/inittab" <<'TAB'
 ::respawn:/usr/bin/flipos-hostd
 TAB
 
+# `pacman` = Arch Linux ARM's pacman for /data/arch (arch-pacman wrapper).
+# flipos' own pacman binary moves to /usr/libexec/flipos/pacman, where the
+# wrapper (first-run bootstrap) and flipos-pkg use it. Idempotent: TARGET_DIR
+# persists, and a pacman rebuild reinstalls the ELF into /usr/bin.
+mkdir -p "$T/usr/libexec/flipos"
+if [ -f "$T/usr/bin/pacman" ] && [ ! -L "$T/usr/bin/pacman" ]; then
+  mv -f "$T/usr/bin/pacman" "$T/usr/libexec/flipos/pacman"
+fi
+ln -sfn ../libexec/flipos/arch-pacman "$T/usr/bin/pacman"
+
 # Android host bundle: move QEMU (built here for aarch64/glibc) out of the guest
 # into $BINARIES_DIR/android-host. The guest image never contains QEMU.
 python3 -I "$(dirname "$0")/android-bundle.py" "$T" "$BINARIES_DIR/android-host" "$BUILD_DIR"

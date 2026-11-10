@@ -74,6 +74,22 @@ denied syscall returns `EPERM`.
 - Apps install into the writable `/data` app root only; the OS root is read-only
   EROFS and is never touched by pacman.
 
+### 4b. Arch Linux ARM packages (`pacman`)  [done]
+- `pacman` in flipos is Arch Linux ARM's pacman, managing a separate root in
+  `/data/arch`; the read-only OS is never touched.
+- Trust anchor: the Arch Linux ARM keyring shipped **in the read-only image**
+  (`/usr/share/pacman/keyrings/archlinuxarm*`), pinned to build key
+  `68B3537F39A313B3E574D06777193F152BDBE6A6` (provenance in `docs/SOURCES.md`).
+  The first-run bootstrap refuses to continue if that key is absent.
+  `SigLevel = Required DatabaseOptional`: every package must be signed.
+- Limits: the mirror is plain HTTP and Arch Linux ARM does not sign its package
+  databases, so a network attacker can hide or delay updates (freeze attack), but
+  cannot get an unsigned or wrongly-signed package installed.
+- **Not a sandbox:** Arch programs run as root, chrooted into `/data/arch` with
+  `/dev`, `/proc`, `/sys`, `/run` and `/tmp` shared. A chroot is no security
+  boundary; an Arch program can do anything in the flipos VM (not on the phone -
+  the VM boundary still holds).
+
 ## 5. Permissions  [spec]
 
 Declared in `manifest.toml`, granted at **first use** via `permd` → shell dialog

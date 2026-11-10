@@ -16,6 +16,23 @@ from the pinned Buildroot tree (so one tag fixes the whole set).
 
 - pacman 7.1.0 tarball: SHA-256 `530e50d7…2171`, GPG-verified (Allan McRae, Arch keyring).
 
+## Arch Linux ARM keyring (vendored, read-only image)
+`br2-external/board/flipos/rootfs-overlay/usr/share/pacman/keyrings/archlinuxarm*`
+are copied from `archlinuxarm-keyring-20240419-2-any.pkg.tar.xz`
+(SHA-256 `3cb36869edfe413672a6e932cc55d7f8386e1a9d3b38663cfb3bc6fe0d146e21`,
+mirror.archlinuxarm.org `aarch64/core`), whose detached signature verifies with the
+key it trusts: **`68B3537F39A313B3E574D06777193F152BDBE6A6`** "Arch Linux ARM Build
+System <builder@archlinuxarm.org>". The same fingerprint is in Arch Linux ARM's
+2014 keyring on GitHub (`archlinuxarm/archlinuxarm-keyring`, commit `91e6b11`), an
+independent source fetched over HTTPS. Vendored rather than downloaded at build
+time because mirrors drop old keyring versions.
+
+| file | SHA-256 |
+|---|---|
+| archlinuxarm.gpg | `6ce771e853f04a38a5b533cb33e61f877b9b06b58b6db051eb8a15d737a2332f` |
+| archlinuxarm-trusted | `f2a7250f2a2b77542f82f4219b2bae7895f27b3dcfdf350b497e2be306af776d` |
+| archlinuxarm-revoked | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` (empty) |
+
 ## Android host bundle (QEMU on the phone)
 - **QEMU 10.2.0** and its libraries (glib, pixman, libslirp, dtc, zlib, …) and
   **glibc** come from the pinned Buildroot tree, built by the same toolchain as the

@@ -338,6 +338,76 @@ static void scan_dir(const char *dir, const char *root) {
 	closedir(d);
 }
 
+/* Arch Linux ARM apps (/data/arch, managed by `pacman`): read the freedesktop
+ * .desktop entries they install and launch them through arch-run, which runs
+ * them chrooted into /data/arch with the flipos Wayland socket. */
+#define ARCH_APPS "/data/arch/usr/share/applications"
+
+/* Remove desktop-entry field codes (%f %U ...) and unescape %%. */
+static void strip_field_codes(char *s) {
+	char *w = s;
+	for (char *r = s; *r; r++) {
+		if (r[0] == '%' && r[1]) {
+			if (r[1] == '%') *w++ = '%';
+			r++;
+			continue;
+		}
+		*w++ = *r;
+	}
+	*w = '\0';
+	while (w > s && isspace((unsigned char)w[-1])) *--w = '\0';
+}
+
+static void scan_desktop_dir(const char *dir) {
+	DIR *d = opendir(dir);
+	if (!d) {
+		return;
+	}
+	struct dirent *e;
+	while ((e = readdir(d)) && n_apps < MAX_APPS) {
+		size_t len = strlen(e->d_name);
+		if (len < 9 || strcmp(e->d_name + len - 8, ".desktop") != 0) continue;
+		char path[512], line[1024], name[64] = "", exec[400] = "";
+		bool in_entry = false, app = false, hidden = false, terminal = false;
+		snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+		FILE *f = fopen(path, "r");
+		if (!f) continue;
+		while (fgets(line, sizeof(line), f)) {
+			line[strcspn(line, "\r\n")] = '\0';
+			if (line[0] == '[') {
+				in_entry = strcmp(line, "[Desktop Entry]") == 0;
+				continue;
+			}
+			if (!in_entry) continue;
+			if (strncmp(line, "Name=", 5) == 0 && !name[0])
+				snprintf(name, sizeof(name), "%s", line + 5);
+			else if (strncmp(line, "Exec=", 5) == 0 && !exec[0])
+				snprintf(exec, sizeof(exec), "%s", line + 5);
+			else if (strcmp(line, "Type=Application") == 0) app = true;
+			else if (strcmp(line, "NoDisplay=true") == 0 || strcmp(line, "Hidden=true") == 0)
+				hidden = true;
+			else if (strcmp(line, "Terminal=true") == 0) terminal = true;
+		}
+		fclose(f);
+		if (!app || hidden || !name[0] || !exec[0]) continue;
+		strip_field_codes(exec);
+		/* One shell-quoted argument for arch-run: ' -> '\'' */
+		char q[460];
+		size_t o = 0;
+		for (const char *c = exec; *c && o + 5 < sizeof(q); c++) {
+			if (*c == '\'') { memcpy(q + o, "'\\''", 4); o += 4; }
+			else q[o++] = *c;
+		}
+		q[o] = '\0';
+		struct app *a = &apps[n_apps];
+		snprintf(a->name, sizeof(a->name), "%s", name);
+		snprintf(a->entry, sizeof(a->entry), "%s/usr/libexec/flipos/arch-run '%s'",
+			terminal ? "foot " : "", q);
+		n_apps++;
+	}
+	closedir(d);
+}
+
 static int cmp_app(const void *a, const void *b) {
 	return strcasecmp(((const struct app *)a)->name, ((const struct app *)b)->name);
 }
@@ -350,6 +420,7 @@ static bool scan_apps(void) {
 	n_apps = 0;
 	scan_dir("/usr/share/flipos/apps", "");
 	scan_dir("/data/appfs/usr/share/flipos/apps", "/data/appfs");
+	scan_desktop_dir(ARCH_APPS);
 	qsort(apps, n_apps, sizeof(apps[0]), cmp_app);
 	return n_apps != old_n || memcmp(old, apps, sizeof(apps)) != 0;
 }

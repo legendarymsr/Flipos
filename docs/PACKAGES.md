@@ -37,6 +37,8 @@ from the pinned Buildroot tree (`docs/SOURCES.md`), so one tag fixes the set.
 | gnupg2 | provides `gpg`/`pacman-key` for the flipos keyring |
 | libarchive, libcurl, openssl | pacman deps: package extraction, downloads, crypto |
 | bash | pacman-key, makepkg and repo-add are bash scripts |
+| xz, zstd | libarchive formats: Arch and flipos packages are `.pkg.tar.zst` / `.xz` |
+| Arch Linux ARM keyring | trust anchor for `pacman` (Arch Linux ARM in `/data/arch`); vendored, see `docs/SOURCES.md` |
 | xkeyboard-config | keyboard layout data; without it the compositor cannot build a keymap |
 | DejaVu fonts | foot needs at least one font |
 | e2fsprogs | formats /data on first boot |

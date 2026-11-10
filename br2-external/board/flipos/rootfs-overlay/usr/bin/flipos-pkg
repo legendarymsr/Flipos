@@ -20,7 +20,7 @@ set -eu
 ROOT=${FLIPOS_APPROOT:-/data/appfs}
 GPGDIR=${FLIPOS_GPGDIR:-/data/system/pacman-gpg}
 PINS=${FLIPOS_PINS:-/data/system/app-keys}
-PACMAN=${FLIPOS_PACMAN:-pacman}   # overridable for tests
+PACMAN=${FLIPOS_PACMAN:-/usr/libexec/flipos/pacman}   # flipos pacman (`pacman` is Arch); overridable for tests
 CACHE=$ROOT/var/cache/pacman/pkg
 REPO=$ROOT/repo
 

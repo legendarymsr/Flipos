@@ -3,6 +3,7 @@
 # "org.flipos.host" and publish it for the shell in /run/flipos/.
 # Protocol, one line per message, host -> guest only:
 #   battery <percent 0-100> <Charging|Discharging|Full|Not charging|Unknown>
+#   dns <ipv4> [<ipv4> ...]     the phone's current DNS servers (max 3)
 # Input is validated; anything else is ignored. Respawned by init.
 OUT=/run/flipos
 mkdir -p "$OUT"
@@ -15,8 +16,26 @@ if [ -z "$port" ]; then
   exec sleep 2147483647
 fi
 set -f                      # from here on: no glob expansion of received text
+valid_ipv4() {
+  case "$1" in *[!0-9.]*|'') return 1 ;; esac
+  IFS=. read -r a b c d x <<IP
+$1
+IP
+  [ -z "$x" ] && [ -n "$d" ] || return 1
+  for o in "$a" "$b" "$c" "$d"; do [ -n "$o" ] && [ "$o" -le 255 ] || return 1; done
+}
 while IFS= read -r line; do
   set -- $line
+  if [ "$1" = dns ]; then
+    shift; servers=""; n=0
+    for s in "$@"; do
+      valid_ipv4 "$s" && [ $n -lt 3 ] && { servers="$servers $s"; n=$((n + 1)); }
+    done
+    [ -n "$servers" ] || continue
+    echo $servers > "$OUT/dns.tmp" && mv "$OUT/dns.tmp" "$OUT/dns"
+    /usr/libexec/flipos/apply-dns
+    continue
+  fi
   [ "$1" = battery ] || continue
   pct="$2"; shift 2; st="$*"
   case "$pct" in ''|*[!0-9]*) continue ;; esac

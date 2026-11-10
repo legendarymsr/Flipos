@@ -1,0 +1,3 @@
+#!/bin/sh
+# keep the phone's DNS servers first after udhcpc rewrites resolv.conf
+case "$1" in bound|renew) /usr/libexec/flipos/apply-dns ;; esac

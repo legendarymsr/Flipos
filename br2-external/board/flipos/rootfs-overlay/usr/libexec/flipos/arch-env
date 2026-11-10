@@ -1,0 +1,116 @@
+# Shared helpers for the Arch Linux ARM environment in /data/arch.
+# Sourced by /usr/bin/pacman (arch-pacman), archsh and arch-run.
+#
+# What it is: a normal Arch Linux ARM aarch64 root filesystem on the writable
+# data disk, managed by Arch's own pacman. flipos' read-only OS is untouched.
+# Programs from it run chrooted into /data/arch with /dev /proc /sys /run /tmp
+# shared, so Wayland apps draw on the flipos screen.
+#
+# Trust: packages must carry a valid signature from the Arch Linux ARM keyring
+# shipped in the read-only image (/usr/share/pacman/keyrings/archlinuxarm*,
+# build key 68B3537F39A313B3E574D06777193F152BDBE6A6 - see docs/SOURCES.md).
+# The mirror is plain HTTP (its HTTPS certificate doesn't match) and Arch Linux
+# ARM does not sign its package databases, so a network attacker could withhold
+# updates - but cannot get an unsigned or wrongly signed package installed.
+#
+# NOT a sandbox: a chroot run as root is not a security boundary. Arch programs
+# have full access to the flipos VM (see docs/SECURITY.md).
+
+A=/data/arch
+ARCH_KEY=68B3537F39A313B3E574D06777193F152BDBE6A6
+FLIPOS_PACMAN=/usr/libexec/flipos/pacman       # flipos' own pacman (bootstrap only)
+ARCH_MIRROR="${ARCH_MIRROR:-http://mirror.archlinuxarm.org/\$arch/\$repo}"
+# Minimal set: enough for Arch's own pacman and a shell; GUI apps pull the rest.
+ARCH_BOOT_PKGS="filesystem bash coreutils pacman archlinuxarm-keyring sed grep gawk \
+findutils tar gzip xz which less ca-certificates ttf-dejavu"
+ARCH_PATH=/usr/local/sbin:/usr/local/bin:/usr/bin
+
+arch_ready() { [ -x "$A/usr/bin/pacman" ] && [ -f "$A/etc/pacman.conf" ]; }
+
+arch_need_root() {
+  [ "$(id -u)" = 0 ] || { echo "flipos: run this as root" >&2; exit 1; }
+}
+
+# Share the live system with the Arch root (idempotent, survives until reboot).
+arch_mounts() {
+  # The Arch root must itself be a mount point (as arch-chroot does): inside a
+  # chroot only mounts below it are visible, and without one for "/" Arch's
+  # pacman can't determine free space ("could not determine cachedir mount
+  # point") and refuses every install. Must come before the mounts below.
+  grep -q " $A " /proc/mounts || mount -o bind "$A" "$A"
+  for d in dev proc sys run tmp; do
+    mkdir -p "$A/$d"
+    grep -q " $A/$d " /proc/mounts && continue
+    if [ "$d" = proc ]; then mount -t proc proc "$A/proc"
+    else mount -o rbind "/$d" "$A/$d"; fi
+  done
+}
+
+# Arch programs resolve names with the same servers as flipos.
+arch_resolv() {
+  mkdir -p "$A/etc"
+  rm -f "$A/etc/resolv.conf"
+  cat /etc/resolv.conf > "$A/etc/resolv.conf" 2>/dev/null || true
+}
+
+arch_write_conf() {
+  mkdir -p "$A/etc/pacman.d"
+  cat > "$A/etc/pacman.conf" <<EOF
+# Arch Linux ARM inside flipos (/data/arch). Managed by: pacman (flipos wrapper).
+[options]
+Architecture = aarch64
+HoldPkg      = pacman glibc
+ParallelDownloads = 3
+CheckSpace
+# Every package must be signed by a key in the Arch Linux ARM keyring.
+SigLevel     = Required DatabaseOptional
+LocalFileSigLevel = Optional
+
+[core]
+Server = $ARCH_MIRROR
+[extra]
+Server = $ARCH_MIRROR
+[alarm]
+Server = $ARCH_MIRROR
+EOF
+}
+
+arch_bootstrap() {
+  echo "flipos: first use - setting up Arch Linux ARM in $A"
+  echo "flipos: this downloads about 150 MB and can take a while under TCG."
+  mkdir -p "$A/var/lib/pacman" "$A/var/cache/pacman/pkg" "$A/var/log" "$A/root" \
+    "$A/etc/pacman.d/hooks"
+  mkdir -p -m 1777 "$A/tmp"
+  [ -f "$A/etc/pacman.conf" ] || arch_write_conf
+  arch_mounts
+  arch_resolv
+  G="$A/etc/pacman.d/gnupg"
+  if [ ! -f "$G/trustdb.gpg" ]; then
+    pacman-key --gpgdir "$G" --init || return 1
+    pacman-key --gpgdir "$G" --populate archlinuxarm || return 1
+  fi
+  # The pinned build key must be present and trusted, or we stop here.
+  gpg --homedir "$G" --batch --list-keys "$ARCH_KEY" >/dev/null 2>&1 || {
+    echo "flipos: Arch Linux ARM build key $ARCH_KEY missing from keyring - refusing" >&2
+    return 1
+  }
+  "$FLIPOS_PACMAN" --root "$A" --config "$A/etc/pacman.conf" \
+    --dbpath "$A/var/lib/pacman" --cachedir "$A/var/cache/pacman/pkg" \
+    --logfile "$A/var/log/pacman.log" --gpgdir "$G" \
+    --hookdir "$A/etc/pacman.d/hooks" \
+    -Sy --noconfirm --needed $ARCH_BOOT_PKGS || return 1
+  arch_resolv            # the filesystem package installed its own resolv.conf
+  echo "flipos: Arch Linux ARM is ready. Use pacman as on Arch; 'archsh' opens an Arch shell."
+}
+
+# Run a command line inside the Arch root with a clean, Wayland-ready env.
+arch_exec() {
+  exec chroot "$A" /usr/bin/env -i \
+    HOME=/root PATH="$ARCH_PATH" LANG=C.UTF-8 TERM="${TERM:-xterm-256color}" \
+    XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/0}" \
+    WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
+    GDK_BACKEND=wayland QT_QPA_PLATFORM=wayland MOZ_ENABLE_WAYLAND=1 \
+    SDL_VIDEODRIVER=wayland ELECTRON_OZONE_PLATFORM_HINT=wayland \
+    http_proxy="${http_proxy:-}" https_proxy="${https_proxy:-}" no_proxy="${no_proxy:-}" \
+    "$@"
+}

@@ -104,9 +104,9 @@ cmd_start() {
   # Ask Android's low-memory killer to spare the VM (runtime-only, per process).
   echo -800 > "/proc/$(cat "$RUN/qemu.pid")/oom_score_adj" 2>/dev/null
 
-  if ! alive "$RUN/battery.pid"; then
-    setsid sh "$0" _battery > /dev/null 2>&1 &
-    echo $! > "$RUN/battery.pid"
+  if ! alive "$RUN/hostinfo.pid"; then
+    setsid sh "$0" _hostinfo > /dev/null 2>&1 &
+    echo $! > "$RUN/hostinfo.pid"
   fi
   if ! alive "$RUN/httpd.pid"; then
     setsid "$LD" --library-path "$H/lib" "$H/bin/busybox" httpd -f \
@@ -119,7 +119,7 @@ cmd_start() {
 }
 
 cmd_stop() {
-  for p in qemu httpd battery; do
+  for p in qemu httpd hostinfo battery; do
     if alive "$RUN/$p.pid"; then kill "$(cat "$RUN/$p.pid")" 2>/dev/null; say "stopped $p"; fi
     rm -f "$RUN/$p.pid"
   done
@@ -133,32 +133,47 @@ cmd_status() {
   B="$(android_battery_dir)"
   if [ -n "$B" ]; then say "phone battery $(cat "$B/capacity")% ($(cat "$B/status")), shown in flipos"
   else say "no phone battery found in /sys/class/power_supply"; fi
+  say "DNS for flipos: $(android_dns)"
   [ -c /dev/kvm ] && say "/dev/kvm present" || say "/dev/kvm absent (TCG only)"
 }
 
 cmd_url() { say "open in your browser: $URL"; }
 
-# The phone's battery (Android sysfs, read-only) -> the guest's status bar.
-# Sends on change and at least once a minute (the guest drops values older than
-# 3 minutes). Runs only while the VM does.
+# Phone status -> the guest, over the one-way virtio-serial port:
+#  - battery (Android sysfs, read-only) for the status bar;
+#  - DNS servers, because QEMU's DNS forwarder can't work on Android (it reads
+#    the host's /etc/resolv.conf, which Android lacks). DNS="1.1.1.1 9.9.9.9"
+#    overrides what is detected.
+# Each line is sent on change and at least once a minute. Runs while the VM does.
 android_battery_dir() {
   [ -r /sys/class/power_supply/battery/capacity ] && { echo /sys/class/power_supply/battery; return; }
   for d in /sys/class/power_supply/*; do
     [ "$(cat "$d/type" 2>/dev/null)" = Battery ] && [ -r "$d/capacity" ] && { echo "$d"; return; }
   done
 }
-cmd_battery() {
+android_dns() {
+  if [ -n "${DNS:-}" ]; then echo "$DNS"; return; fi
+  # active network's resolvers (IPv4 only: QEMU's user network is IPv4 here)
+  d="$(dumpsys connectivity 2>/dev/null | grep -o 'DnsAddresses: \[[^]]*\]' | head -n 1 \
+       | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 3 | tr '\n' ' ')"
+  [ -n "$d" ] || d="$(getprop net.dns1) $(getprop net.dns2)"
+  echo $d
+}
+cmd_hostinfo() {
   B="$(android_battery_dir)"
-  [ -n "$B" ] || exit 0                      # no battery: the guest shows none
   # O_RDWR open never blocks, even before/after QEMU holds the FIFO.
   exec 3<> "$RUN/hostinfo.in" || exit 1
-  last=""; n=0
+  lastb=""; lastd=""; n=0
   while alive "$RUN/qemu.pid"; do
-    cap="$(cat "$B/capacity" 2>/dev/null)"; st="$(cat "$B/status" 2>/dev/null)"
-    line="battery ${cap:-0} ${st:-Unknown}"
-    if [ "$line" != "$last" ] || [ "$n" -ge 6 ]; then
-      echo "$line" >&3; last="$line"; n=0
+    if [ -n "$B" ]; then
+      line="battery $(cat "$B/capacity" 2>/dev/null || echo 0) $(cat "$B/status" 2>/dev/null || echo Unknown)"
+      if [ "$line" != "$lastb" ] || [ "$n" -ge 6 ]; then echo "$line" >&3; lastb="$line"; fi
     fi
+    dns="$(android_dns)"
+    if [ -n "$dns" ] && { [ "dns $dns" != "$lastd" ] || [ "$n" -ge 6 ]; }; then
+      echo "dns $dns" >&3; lastd="dns $dns"
+    fi
+    [ "$n" -ge 6 ] && n=0
     n=$((n + 1)); sleep 10
   done
 }
@@ -170,6 +185,6 @@ case "${1:-start}" in
   status) cmd_status ;;
   url) cmd_url ;;
   log) tail -n "${2:-40}" "$RUN/serial.log" ;;
-  _battery) cmd_battery ;;
+  _hostinfo|_battery) cmd_hostinfo ;;
   *) echo "usage: flipos start|stop|restart|status|url|log"; exit 2 ;;
 esac

@@ -48,6 +48,36 @@ sed -i 's|^\( *\)encs.push(encodings.pseudoEncodingQEMULedEvent);|\1// flipos: L
   "$STAGE/payload/novnc/core/rfb.js"
 grep -q 'flipos: LED-state sync disabled' "$STAGE/payload/novnc/core/rfb.js" \
   || { echo "noVNC caps-lock patch did not apply"; exit 1; }
+# flipos patch: phone keyboards "smart-punctuate" - a typed - can arrive as
+# U+2010/2011/2012/2013/2014/2212 and quotes as curly ones, which the shell
+# doesn't understand (`flipos‐pkg: not found`). Map them to ASCII before sending.
+# Keysyms: legacy XK_endash/emdash/quote marks, else 0x1000000 + Unicode.
+sed -i 's|^\(    sendKey(keysym, code, down) {\)$|\1\
+        // flipos: map look-alike punctuation from phone keyboards to ASCII\
+        keysym = ({ 0x0aaa: 0x2d, 0x0aa9: 0x2d, 0x0abb: 0x2d, 0x00ad: 0x2d, 0x1002010: 0x2d, 0x1002011: 0x2d,\
+                    0x1002012: 0x2d, 0x1002013: 0x2d, 0x1002014: 0x2d, 0x1002212: 0x2d,\
+                    0x0ad0: 0x27, 0x0ad1: 0x27, 0x1002018: 0x27, 0x1002019: 0x27,\
+                    0x0ad2: 0x22, 0x0ad3: 0x22, 0x100201c: 0x22, 0x100201d: 0x22 })[keysym] ?? keysym;|' \
+  "$STAGE/payload/novnc/core/rfb.js"
+grep -q 'flipos: map look-alike punctuation' "$STAGE/payload/novnc/core/rfb.js" \
+  || { echo "noVNC punctuation patch did not apply"; exit 1; }
+# flipos patch: characters typed on a phone (virtual) keyboard reach sendKey()
+# as a bare keysym with no key code; QEMU maps the keysym to the key but NOT to
+# Shift, so | > & ! : " ? ( ) _ + etc. arrived unshifted (`a|b` became `a\b`).
+# For those, hold Shift around the character. Physical keyboards pass a key
+# code and send their own Shift, so they are unaffected.
+sed -i '/^    sendKey(keysym, code, down) {$/,/_viewOnly) { return; }$/ s|^\(        if (this._rfbConnectionState !== .connected. \|\| this._viewOnly) { return; }\)$|\1\
+        // flipos: shifted characters from phone keyboards need an explicit Shift\
+        if (code === undefined \&\& down === undefined \&\&\
+            ((keysym >= 0x41 \&\& keysym <= 0x5a) \|\| "~!@#$%^\&*()_+{}\|:\\"<>?".includes(String.fromCharCode(keysym)))) {\
+            this.sendKey(0xffe1, "ShiftLeft", true);\
+            this.sendKey(keysym, code, true);\
+            this.sendKey(keysym, code, false);\
+            this.sendKey(0xffe1, "ShiftLeft", false);\
+            return;\
+        }|' "$STAGE/payload/novnc/core/rfb.js"
+grep -q 'flipos: shifted characters from phone keyboards' "$STAGE/payload/novnc/core/rfb.js" \
+  || { echo "noVNC shift patch did not apply"; exit 1; }
 
 mkdir -p "$ROOT/out"
 OUT="$ROOT/out/flipos-$VER.zip"; rm -f "$OUT"
